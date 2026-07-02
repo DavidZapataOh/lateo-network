@@ -11,6 +11,7 @@
     "dev": "tsx watch src/index.ts"
   },
   "dependencies": {
+    "@openzeppelin/merkle-tree": "^1.0.8",
     "pg": "^8.13.1"
   },
   "devDependencies": {
