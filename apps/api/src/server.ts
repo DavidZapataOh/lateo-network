@@ -3,19 +3,25 @@ import type pg from 'pg';
 import { listCreatures } from './readmodel.js';
 import { QuoteStore } from './quote.js';
 import { requirementsFor } from './rail.js';
+import type { DemandEvent } from './demand.js';
 
 /** Short quote TTL (ADR-0007): re-pricing security is our nonce/TTL, not the >=30d EIP-3009 window. */
 export const QUOTE_TTL_S = 120;
 
+export interface ServerOptions {
+  /** Sink for client-incoming demand signals (fed to the brain/actor, post-2.3). */
+  onDemand?: (ev: DemandEvent) => void;
+}
+
 /**
  * HTTP server. `GET /health`, `GET /creatures` (World read model), and the state-gated x402
- * `POST /c/{id}` service route: alive -> 402 with a {price, nonce, ttl} quote (ADR-0007). The
- * paid-request path (verify -> serve -> settle/void) lands with the services (2.3 tasks 6-11).
+ * `POST /c/{id}` service route: alive -> 402 with a {price, nonce, ttl} quote (ADR-0007) and a
+ * demand event. The paid-request path (verify -> serve -> settle/void) lands with the services.
  */
-export function createServer(pool: pg.Pool): http.Server {
+export function createServer(pool: pg.Pool, opts: ServerOptions = {}): http.Server {
   const quotes = new QuoteStore();
   return http.createServer((req, res) => {
-    void handle(req, res, pool, quotes);
+    void handle(req, res, pool, quotes, opts);
   });
 }
 
@@ -24,6 +30,7 @@ async function handle(
   res: http.ServerResponse,
   pool: pg.Pool,
   quotes: QuoteStore,
+  opts: ServerOptions,
 ): Promise<void> {
   const url = req.url ?? '';
   if (req.method === 'GET' && url === '/health') {
@@ -41,7 +48,7 @@ async function handle(
   }
   const service = /^\/c\/([^/?]+)/.exec(url);
   if (req.method === 'POST' && service) {
-    await handleService(res, pool, quotes, service[1]!);
+    await handleService(res, pool, quotes, opts, service[1]!);
     return;
   }
   send(res, 404, { error: 'not_found' });
@@ -51,6 +58,7 @@ interface CreatureRow {
   state: 'alive' | 'agonizing' | 'dead';
   wallet_address: string;
   price_atomic: string;
+  service_type: string;
 }
 
 /**
@@ -62,10 +70,11 @@ async function handleService(
   res: http.ServerResponse,
   pool: pg.Pool,
   quotes: QuoteStore,
+  opts: ServerOptions,
   id: string,
 ): Promise<void> {
   const r = await pool.query<CreatureRow>(
-    `select state, wallet_address, price_atomic from creatures where id = $1`,
+    `select state, wallet_address, price_atomic, service_type from creatures where id = $1`,
     [id],
   );
   const row = r.rows[0];
@@ -85,6 +94,8 @@ async function handleService(
   const price = BigInt(row.price_atomic);
   const now = Math.floor(Date.now() / 1000);
   const quote = quotes.issue(id, price, QUOTE_TTL_S, now);
+  // A live client asked -> emit a demand signal carrying context (service, price, timing).
+  opts.onDemand?.({ creatureId: id, kind: 'arrival', service: row.service_type, amount: price, at: now });
   send(res, 402, {
     error: 'payment_required',
     price: price.toString(),

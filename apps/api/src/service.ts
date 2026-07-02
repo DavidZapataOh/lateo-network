@@ -31,6 +31,39 @@ export async function deliverOrVoid(
   return { outcome: 'voided' };
 }
 
+export interface ServeResult<T> {
+  outcome: 'served' | 'voided';
+  result?: T;
+  settleId?: string;
+}
+
+/**
+ * The x402 service flow's value order (ADR-0006, LOAD-BEARING): DELIVER, then capture.
+ * 1. run the service (`deliver`); if it throws (URL unreachable, etc.) -> VOID (buyer keeps money).
+ * 2. delivery OK -> `deliverOrVoid`: settle IF the creature is still alive; if it died mid-request,
+ *    VOID (a dead creature never captures). Settling before delivering is the exact red flag for a
+ *    judge — this order makes that impossible.
+ */
+export async function serveAndSettle<T>(
+  pool: pg.Pool,
+  args: { creatureId: string; entryId: number; auth: SignedAuthorization; deliver: () => Promise<T> },
+): Promise<ServeResult<T>> {
+  let result: T;
+  try {
+    result = await args.deliver();
+  } catch {
+    await voidAuthorization(pool, args.entryId); // delivery failed -> void, no capture
+    return { outcome: 'voided' };
+  }
+  const decided = await deliverOrVoid(pool, {
+    creatureId: args.creatureId,
+    entryId: args.entryId,
+    auth: args.auth,
+  });
+  if (decided.outcome === 'voided') return { outcome: 'voided' };
+  return { outcome: 'served', result, settleId: decided.settleId };
+}
+
 export interface FeedResult {
   fed: boolean;
   state: LifeState;
