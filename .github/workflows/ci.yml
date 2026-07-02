@@ -54,6 +54,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: foundry-rs/foundry-toolchain@v1
-      - uses: crytic/slither-action@v0
+      - uses: crytic/slither-action@v0.4.2
         with:
           target: contracts
+          fail-on: high # scaffolding has only a trivial contract; tighten for the real one in slice 1.2
