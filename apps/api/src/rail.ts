@@ -1,4 +1,6 @@
 import { GatewayClient, BatchEvmScheme } from '@circle-fin/x402-batching/client';
+import { createWalletClient, createPublicClient, http, parseUnits, defineChain } from 'viem';
+import { privateKeyToAccount, generatePrivateKey } from 'viem/accounts';
 import { BatchFacilitatorClient } from '@circle-fin/x402-batching/server';
 import {
   initiateDeveloperControlledWalletsClient,
@@ -183,9 +185,122 @@ export async function createCreatureWallet(
   return { walletId: w.id, address: w.address as `0x${string}` };
 }
 
-// NOTE (creature cash-out): a creature (Circle wallet) can SIGN a Gateway BurnIntent via Circle,
-// but the on-chain gatewayMint must be SENT by a local signer — GatewayClient.withdraw uses a viem
-// walletClient -> writeContract -> signTransaction, which a Circle wallet cannot do. So the account
-// -injection shortcut does NOT work. Production path (reinforces ADR-0016): RELAYER — the creature
-// signs the BurnIntent (via Circle), PLATFORM relays the gatewayMint (recipient is still the creature,
-// creature != treasury). Requires factoring the BurnIntent build out of the SDK; pending decision.
+const GATEWAY_TRANSFER_API = 'https://gateway-api-testnet.circle.com/v1/transfer';
+const GATEWAY_MINTER_ABI = [
+  {
+    name: 'gatewayMint',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'attestationPayload', type: 'bytes' },
+      { name: 'signature', type: 'bytes' },
+    ],
+    outputs: [],
+  },
+] as const;
+
+// EIP-712 for the Gateway BurnIntent (domain is name+version only; circleAccount derives EIP712Domain).
+const BURN_INTENT_TYPES = {
+  TransferSpec: [
+    { name: 'version', type: 'uint32' },
+    { name: 'sourceDomain', type: 'uint32' },
+    { name: 'destinationDomain', type: 'uint32' },
+    { name: 'sourceContract', type: 'bytes32' },
+    { name: 'destinationContract', type: 'bytes32' },
+    { name: 'sourceToken', type: 'bytes32' },
+    { name: 'destinationToken', type: 'bytes32' },
+    { name: 'sourceDepositor', type: 'bytes32' },
+    { name: 'destinationRecipient', type: 'bytes32' },
+    { name: 'sourceSigner', type: 'bytes32' },
+    { name: 'destinationCaller', type: 'bytes32' },
+    { name: 'value', type: 'uint256' },
+    { name: 'salt', type: 'bytes32' },
+    { name: 'hookData', type: 'bytes' },
+  ],
+  BurnIntent: [
+    { name: 'maxBlockHeight', type: 'uint256' },
+    { name: 'maxFee', type: 'uint256' },
+    { name: 'spec', type: 'TransferSpec' },
+  ],
+};
+
+interface SdkInternals {
+  chainConfig: { gatewayMinter: `0x${string}` };
+  createBurnIntent: (
+    source: unknown,
+    dest: unknown,
+    value: bigint,
+    recipient: string,
+    maxFee: bigint,
+  ) => Record<string, unknown>;
+}
+
+export interface CashOutResult {
+  mintTxHash: `0x${string}`;
+  formattedAmount: string;
+  recipient: `0x${string}`;
+}
+
+/**
+ * A creature (Circle wallet) cashes out its EARNED, SETTLED Gateway balance to its own wallet on-chain,
+ * via the RELAYER pattern (ADR-0016 — the creature signs, the platform sends the tx):
+ *   1. reuse the SDK's createBurnIntent to build the burn intent (recipient = the creature),
+ *   2. the CREATURE signs it via Circle (signTypedData),
+ *   3. POST /transfer -> attestation,
+ *   4. PLATFORM relays gatewayMint (gas only) -> USDC is MINTED to the creature by GatewayMinter.
+ * On-chain this reads as "GatewayMinter minted the creature's own Gateway balance to it" — NOT a
+ * platform->creature transfer. The creature (recipient) != treasury. Amount must be settled/available.
+ */
+export async function creatureCashOut(
+  circle: Circle,
+  args: { walletId: string; address: `0x${string}`; amountUsdc: string },
+): Promise<CashOutResult> {
+  const rpcUrl = reqEnv('ARC_RPC');
+  const signer = circleAccount(circle, args.walletId, args.address);
+  const ref = new GatewayClient({ chain: 'arcTestnet', privateKey: generatePrivateKey(), rpcUrl });
+  // inject the creature's account so createBurnIntent uses the creature as sourceDepositor/sourceSigner
+  // (it reads this.account.address); otherwise the dummy key's address is used and the signature mismatches.
+  (ref as unknown as { account: unknown }).account = signer;
+  const sdk = ref as unknown as SdkInternals;
+  const amount = parseUnits(args.amountUsdc, 6);
+  const maxFee = parseUnits('2.01', 6);
+  // reuse the SDK builder (same-chain: source config == dest config); recipient = the creature
+  const burnIntent = sdk.createBurnIntent(sdk.chainConfig, sdk.chainConfig, amount, args.address, maxFee);
+
+  // the CREATURE signs the burn intent via Circle
+  const signature = await signer.signTypedData({
+    domain: { name: 'GatewayWallet', version: '1' },
+    types: BURN_INTENT_TYPES,
+    primaryType: 'BurnIntent',
+    message: burnIntent,
+  });
+
+  const resp = await fetch(GATEWAY_TRANSFER_API, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify([{ burnIntent, signature }], (_, v) => (typeof v === 'bigint' ? v.toString() : v)),
+  });
+  const result = (await resp.json()) as { attestation?: `0x${string}`; signature?: `0x${string}`; error?: string; message?: string };
+  if (!result.attestation || !result.signature) {
+    throw new Error(`Gateway /transfer failed: ${result.message ?? result.error ?? JSON.stringify(result)}`);
+  }
+
+  // PLATFORM relays the mint (pays gas; the minted USDC belongs to the creature)
+  const arc = defineChain({
+    id: 5042002,
+    name: 'arc-testnet',
+    nativeCurrency: { name: 'USDC', symbol: 'USDC', decimals: 18 },
+    rpcUrls: { default: { http: [rpcUrl] } },
+  });
+  const relayer = privateKeyToAccount(reqEnv('PLATFORM_PRIVATE_KEY') as `0x${string}`);
+  const wallet = createWalletClient({ account: relayer, chain: arc, transport: http(rpcUrl) });
+  const pub = createPublicClient({ chain: arc, transport: http(rpcUrl) });
+  const mintTxHash = await wallet.writeContract({
+    address: sdk.chainConfig.gatewayMinter,
+    abi: GATEWAY_MINTER_ABI,
+    functionName: 'gatewayMint',
+    args: [result.attestation, result.signature],
+  });
+  await pub.waitForTransactionReceipt({ hash: mintTxHash });
+  return { mintTxHash, formattedAmount: args.amountUsdc, recipient: args.address };
+}

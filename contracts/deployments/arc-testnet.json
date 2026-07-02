@@ -11,5 +11,15 @@
         "appendTx": "0x1ace59a05293f50aa879c5cfbbeb5b51b779009ec9ed2ba0b88a8e69be630404"
       }
     }
+  },
+  "arcEvidence": {
+    "note": "Full arc: external buyer pays a creature (income, settled) -> creature cashes it out to its own wallet on-chain (relayer). Creature != treasury; cash-out is a GatewayMinter mint, not a platform transfer.",
+    "buyer": "0x96f0E3B8b2824C95B60500C9BA5C2dC76EbF11CA",
+    "creature": "0x51ef62c556d96b7f0a06926e890a15026b3aa65d",
+    "incomeSettleId": "af70edab-e9b2-497a-8a3b-310528b365b6",
+    "cashOutTx": "0xf396a3796799c009952c1ae859adffb305d1ccca8dad007a0408b4bb9b948055",
+    "cashOutTo": "0x0022222ABE238Cc2C7Bb1f21003F0a260052475B (GatewayMinter)",
+    "relayer": "0x402af8497B305fc63E51fA6907CcaD7f8f969b05 (PLATFORM, gas only)",
+    "creatureUsdcAfter": "0.015"
   }
 }
