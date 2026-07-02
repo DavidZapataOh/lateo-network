@@ -58,31 +58,40 @@ export function requirementsFor(payTo: string, amount: Atomic): PaymentRequireme
 
 type Circle = ReturnType<typeof initiateDeveloperControlledWalletsClient>;
 
-/** A BatchEvmSigner backed by a Circle wallet: signs EIP-712 via Circle's API (SPIKE-4). */
-function circleSigner(circle: Circle, walletId: string, address: `0x${string}`) {
+interface TypedDataParams {
+  domain: { name?: string; version?: string; chainId?: number; verifyingContract?: string };
+  types: Record<string, Array<{ name: string; type: string }>>;
+  primaryType: string;
+  message: Record<string, unknown>;
+}
+
+const EIP712_DOMAIN_FIELDS: Array<[keyof TypedDataParams['domain'], string]> = [
+  ['name', 'string'],
+  ['version', 'string'],
+  ['chainId', 'uint256'],
+  ['verifyingContract', 'address'],
+];
+
+/**
+ * A viem-account-shaped signer backed by a Circle wallet: signs any EIP-712 payload via Circle's API.
+ * General enough for BOTH the EIP-3009 authorization (BatchEvmScheme, domain has chainId+verifyingContract,
+ * no EIP712Domain in types) AND the Gateway BurnIntent (withdraw, domain is name+version, EIP712Domain
+ * already in types). Only `address` + `signTypedData` are used by BatchEvmScheme and GatewayClient.withdraw.
+ */
+function circleAccount(circle: Circle, walletId: string, address: `0x${string}`) {
   return {
     address,
-    async signTypedData(params: {
-      domain: { name: string; version: string; chainId: number; verifyingContract: `0x${string}` };
-      types: Record<string, Array<{ name: string; type: string }>>;
-      primaryType: string;
-      message: Record<string, unknown>;
-    }): Promise<`0x${string}`> {
-      const typedData = {
-        domain: params.domain,
-        types: {
-          EIP712Domain: [
-            { name: 'name', type: 'string' },
-            { name: 'version', type: 'string' },
-            { name: 'chainId', type: 'uint256' },
-            { name: 'verifyingContract', type: 'address' },
-          ],
-          ...params.types,
-        },
-        primaryType: params.primaryType,
-        message: params.message,
-      };
-      const data = JSON.stringify(typedData, (_, v) => (typeof v === 'bigint' ? v.toString() : v));
+    async signTypedData(params: TypedDataParams): Promise<`0x${string}`> {
+      const types = { ...params.types };
+      if (!types.EIP712Domain) {
+        types.EIP712Domain = EIP712_DOMAIN_FIELDS.filter(([k]) => params.domain[k] !== undefined).map(
+          ([name, type]) => ({ name, type }),
+        );
+      }
+      const data = JSON.stringify(
+        { domain: params.domain, types, primaryType: params.primaryType, message: params.message },
+        (_, v) => (typeof v === 'bigint' ? v.toString() : v),
+      );
       const res = await circle.signTypedData({ walletId, data });
       return res.data!.signature as `0x${string}`;
     },
@@ -100,7 +109,7 @@ export async function signAuthorization(
   args: { walletId: string; address: `0x${string}`; payTo: string; amount: Atomic },
 ): Promise<SignedAuthorization> {
   const requirements = requirementsFor(args.payTo, args.amount);
-  const scheme = new BatchEvmScheme(circleSigner(circle, args.walletId, args.address));
+  const scheme = new BatchEvmScheme(circleAccount(circle, args.walletId, args.address));
   const pp = (await scheme.createPaymentPayload(1, requirements as never)) as {
     x402Version: number;
     payload: unknown;
@@ -173,3 +182,10 @@ export async function createCreatureWallet(
   const w = res.data!.wallets![0]!;
   return { walletId: w.id, address: w.address as `0x${string}` };
 }
+
+// NOTE (creature cash-out): a creature (Circle wallet) can SIGN a Gateway BurnIntent via Circle,
+// but the on-chain gatewayMint must be SENT by a local signer — GatewayClient.withdraw uses a viem
+// walletClient -> writeContract -> signTransaction, which a Circle wallet cannot do. So the account
+// -injection shortcut does NOT work. Production path (reinforces ADR-0016): RELAYER — the creature
+// signs the BurnIntent (via Circle), PLATFORM relays the gatewayMint (recipient is still the creature,
+// creature != treasury). Requires factoring the BurnIntent build out of the SDK; pending decision.
