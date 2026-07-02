@@ -11,8 +11,13 @@
     "dev": "tsx watch src/index.ts"
   },
   "dependencies": {
+    "@circle-fin/developer-controlled-wallets": "^10.8.0",
+    "@circle-fin/x402-batching": "^2.0.4",
     "@openzeppelin/merkle-tree": "^1.0.8",
-    "pg": "^8.13.1"
+    "@x402/core": "2.6.0",
+    "@x402/evm": "2.6.0",
+    "pg": "^8.13.1",
+    "viem": "^2.54.1"
   },
   "devDependencies": {
     "@types/pg": "^8.11.10",
