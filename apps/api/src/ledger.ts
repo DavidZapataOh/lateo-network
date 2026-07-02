@@ -16,10 +16,12 @@ create table if not exists creatures (
   service_type text not null check (service_type in ('summary-with-citations','url-to-json')),
   state text not null default 'alive' check (state in ('alive','agonizing','dead')),
   agonizing_since bigint,
+  price_atomic bigint not null default 1000,
   created_at timestamptz not null default now()
 );
--- Backfill the column on clusters whose creatures table predates the life-cycle machine (2.1).
+-- Backfill columns on clusters whose creatures table predates a later slice.
 alter table creatures add column if not exists agonizing_since bigint;
+alter table creatures add column if not exists price_atomic bigint not null default 1000;
 create table if not exists ledger_entries (
   id bigserial primary key,
   creature_id uuid not null references creatures(id),

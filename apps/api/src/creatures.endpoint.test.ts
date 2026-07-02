@@ -88,9 +88,28 @@ describe('2.1 T4 — POST /c/{id} state gate (no capture on non-alive)', () => {
     expect((await readLifeState(pool, d)).state).toBe('dead');
   });
 
-  it('alive -> service route admitted: 402 Payment Required (real quote/serve is 2.3/2.5)', async () => {
+  it('alive -> 402 with a full quote {price, nonce(bytes32), ttlS, requirements} (ADR-0007)', async () => {
     const a = await createCreature(pool, { walletAddress: '0xA', serviceType: 'url-to-json' });
     const res = await fetch(`${base}/c/${a}`, { method: 'POST' });
     expect(res.status).toBe(402);
+    const q = (await res.json()) as {
+      price: string;
+      nonce: string;
+      ttlS: number;
+      requirements: { asset: string; amount: string; payTo: string; network: string };
+    };
+    expect(q.price).toBe('1000'); // default creature price
+    expect(q.nonce).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(q.ttlS).toBeGreaterThan(0);
+    expect(q.requirements.amount).toBe('1000');
+    expect(q.requirements.payTo).toBe('0xA'); // income pays THIS creature
+    expect(q.requirements.network).toBe('eip155:5042002');
+  });
+
+  it('two 402s on the same creature yield distinct nonces', async () => {
+    const a = await createCreature(pool, { walletAddress: '0xA', serviceType: 'url-to-json' });
+    const n1 = ((await (await fetch(`${base}/c/${a}`, { method: 'POST' })).json()) as { nonce: string }).nonce;
+    const n2 = ((await (await fetch(`${base}/c/${a}`, { method: 'POST' })).json()) as { nonce: string }).nonce;
+    expect(n1).not.toBe(n2);
   });
 });
