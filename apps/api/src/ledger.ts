@@ -15,8 +15,11 @@ create table if not exists creatures (
   wallet_id text,
   service_type text not null check (service_type in ('summary-with-citations','url-to-json')),
   state text not null default 'alive' check (state in ('alive','agonizing','dead')),
+  agonizing_since bigint,
   created_at timestamptz not null default now()
 );
+-- Backfill the column on clusters whose creatures table predates the life-cycle machine (2.1).
+alter table creatures add column if not exists agonizing_since bigint;
 create table if not exists ledger_entries (
   id bigserial primary key,
   creature_id uuid not null references creatures(id),
@@ -102,6 +105,23 @@ export async function postCredit(
       args.nonce ?? null,
       args.settleId ?? null,
     ],
+  );
+  return Number(r.rows[0]!.id);
+}
+
+/**
+ * Authorizes an INCOMING service payment as `pending` (ADR-0006: capture-on-deliver). No balance
+ * check — income is incoming, not spending. Pending income counts toward neither `settled` nor
+ * `pending` balances (uncaptured income is not spendable), until settled (capture) or voided.
+ */
+export async function authorizeIncome(
+  pool: Queryable,
+  args: { creatureId: string; amount: Atomic; nonce: string; counterparty?: string },
+): Promise<number> {
+  const r = await pool.query<{ id: string }>(
+    `insert into ledger_entries(creature_id, kind, amount_atomic, counterparty, status, nonce)
+     values ($1,'income',$2,$3,'pending',$4) returning id`,
+    [args.creatureId, args.amount.toString(), args.counterparty ?? null, args.nonce],
   );
   return Number(r.rows[0]!.id);
 }
