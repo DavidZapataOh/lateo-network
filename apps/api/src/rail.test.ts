@@ -38,10 +38,19 @@ describe.skipIf(!hasArcEnv)('1.3 rail — real Arc/Circle integration', () => {
   beforeAll(async () => {
     const ws = await circle!.createWalletSet({ name: 'lateo-rail-test' });
     creature = await createCreatureWallet(circle!, ws.data!.walletSet!.id);
-    await seedFromTreasury('0.05', creature.address); // TREASURY funds the creature (ADR-0016)
-    for (let i = 0; i < 20 && (await gatewayAvailable(creature.address)) === 0n; i++) await sleep(3000);
+    // Seed from TREASURY (ADR-0016). Arc's confirmation latency is variable and can exceed the SDK's
+    // internal viem receipt-wait; the deposit tx is still submitted and confirms. Swallow ONLY that
+    // receipt-wait timeout and fall through to poll the real credit — a genuine revert still throws.
+    try {
+      await seedFromTreasury('0.05', creature.address);
+    } catch (e) {
+      if (!/timed out|WaitForTransactionReceiptTimeout/i.test(String(e))) throw e;
+    }
+    // Poll the credit with a window matched to Arc's variable latency (never a shortcut: if the
+    // creature is never funded, this still fails). ~6.5 min ceiling; exits early on credit.
+    for (let i = 0; i < 78 && (await gatewayAvailable(creature.address)) === 0n; i++) await sleep(5000);
     expect(await gatewayAvailable(creature.address)).toBeGreaterThan(0n);
-  }, 90_000);
+  }, 420_000);
 
   it('a Circle wallet (no local key) signs EIP-3009 accepted by verify (payer = creature)', async () => {
     const auth = await signAuthorization(circle!, {
