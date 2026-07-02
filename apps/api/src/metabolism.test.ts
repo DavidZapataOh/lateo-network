@@ -64,6 +64,46 @@ describe('2.2 T2 — materialize at cadence N, NOT per tick', () => {
   });
 });
 
+describe('2.2 T7 — pulse emits EXACTLY ONE threshold event on runway<=0; never mutates state', () => {
+  // settled 100, burnRate 1/s, rate 10/tick -> live crosses 0 at tick 10 (accumulated 100).
+  const PROJ = { settled: 100n, pending: 0n, burnRatePerSec: 1n };
+
+  it('runway crossing <=0 emits threshold ONCE across many ticks (latched, not per-tick)', () => {
+    const m = new Metabolism({ ratePerTick: 10n, nTicks: 999, rail: countingRail() });
+    const events: string[] = [];
+    for (let t = 0; t < 20; t++) {
+      m.tick();
+      m.signalThreshold(PROJ, (ev) => events.push(ev));
+    }
+    expect(events).toEqual(['threshold']); // exactly one — not ~10 (bites if emitted per tick)
+  });
+
+  it('the latch RESETS on recovery -> a later crossing emits again', () => {
+    const m = new Metabolism({ ratePerTick: 10n, nTicks: 999, rail: countingRail() });
+    const events: string[] = [];
+    for (let t = 0; t < 20; t++) {
+      m.tick();
+      m.signalThreshold(PROJ, (ev) => events.push(ev)); // crosses -> 1 emit
+    }
+    // recovery: a big settled makes runway > 0 again (feed) -> latch resets
+    m.signalThreshold({ settled: 100_000n, pending: 0n, burnRatePerSec: 1n }, (ev) => events.push(ev));
+    // decline again -> second crossing emits
+    m.signalThreshold(PROJ, (ev) => events.push(ev));
+    expect(events).toEqual(['threshold', 'threshold']);
+  });
+
+  it('signalThreshold returns the runway and only emits — it does NOT own the transition (2.1 does)', () => {
+    const m = new Metabolism({ ratePerTick: 10n, nTicks: 999, rail: countingRail() });
+    let emitted = 0;
+    // before crossing: runway > 0, no emit
+    expect(m.signalThreshold(PROJ, () => emitted++)).toBeGreaterThan(0);
+    expect(emitted).toBe(0);
+    for (let t = 0; t < 12; t++) m.tick(); // drive accumulated past live
+    expect(m.signalThreshold(PROJ, () => emitted++)).toBe(0); // runway floored at 0
+    expect(emitted).toBe(1);
+  });
+});
+
 describe('2.2 T8 (core) — runway discounts un-materialized accumulated burn (INV-2 frontier)', () => {
   it('runway = (settled - pending - accumulated) / burnRatePerSec', () => {
     expect(runwayOf({ settled: 1000n, pending: 0n, accumulated: 100n, burnRatePerSec: 30n })).toBe(30);

@@ -35,6 +35,7 @@ export function runwayOf(args: {
 export class Metabolism {
   private accumulated: Atomic = 0n;
   private sinceLastMaterialize = 0;
+  private thresholdEmitted = false;
   private readonly ratePerTick: Atomic;
   private readonly nTicks: number;
   private readonly rail: PassiveBurnRail;
@@ -53,6 +54,27 @@ export class Metabolism {
   tick(): void {
     this.accumulated += this.ratePerTick;
     this.sinceLastMaterialize++;
+  }
+
+  /**
+   * Compute the current runway (discounting accumulated burn) and emit EXACTLY ONE `threshold` event
+   * when it first crosses to <=0 (latched until it recovers). The pulse only SIGNALS — it does NOT
+   * mutate the creature's life state; 2.1 consumes the event and owns the transition (no double-owning).
+   */
+  signalThreshold(
+    projection: { settled: Atomic; pending: Atomic; burnRatePerSec: Atomic },
+    emit: (ev: 'threshold') => void,
+  ): number {
+    const runway = runwayOf({ ...projection, accumulated: this.accumulated });
+    if (runway <= 0) {
+      if (!this.thresholdEmitted) {
+        this.thresholdEmitted = true;
+        emit('threshold');
+      }
+    } else {
+      this.thresholdEmitted = false; // recovered — re-arm for a future crossing
+    }
+    return runway;
   }
 
   /**
