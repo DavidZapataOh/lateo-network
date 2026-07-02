@@ -1,0 +1,6 @@
+[profile.default]
+src = "src"
+out = "out"
+test = "test"
+libs = ["lib"]
+# The real attestation contract (ADR-0015) lands in slice 1.2 with forge-std + fuzz.

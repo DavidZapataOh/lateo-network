@@ -1,0 +1,3 @@
+packages:
+  - 'apps/*'
+  # packages/* is added when the web app (Sprint 3) needs shared types (Karpathy: not before)

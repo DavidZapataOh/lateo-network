@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  app:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: lateo
+          POSTGRES_PASSWORD: lateo
+          POSTGRES_DB: lateo_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      PGHOST: localhost
+      PGPORT: '5432'
+      PGUSER: lateo
+      PGPASSWORD: lateo
+      PGDATABASE: lateo_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm build
+      - run: pnpm test
+
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+      - run: forge build
+        working-directory: contracts
+      - run: forge test
+        working-directory: contracts
+
+  slither:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+      - uses: crytic/slither-action@v0
+        with:
+          target: contracts
