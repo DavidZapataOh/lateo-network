@@ -1,0 +1,15 @@
+{
+  "network": "arc-testnet",
+  "chainId": 5042002,
+  "LateoAttestation": {
+    "address": "0xE63E3B67924e3CEAF8f08cf8dB3F26F4A318876C",
+    "attestor": "0x402af8497B305fc63E51fA6907CcaD7f8f969b05",
+    "deployTx": "0x30c7a9b4783d4cb5e5c31747e77c8d3a8ef05ec6c84da73a99ff3ab2261894c3",
+    "epochs": {
+      "1": {
+        "root": "0x0d833267cd4ae09267d28acf048e23f321e57ab444b44e7c434f93f28c4d2053",
+        "appendTx": "0x1ace59a05293f50aa879c5cfbbeb5b51b779009ec9ed2ba0b88a8e69be630404"
+      }
+    }
+  }
+}
