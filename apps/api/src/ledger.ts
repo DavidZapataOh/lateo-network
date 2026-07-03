@@ -17,11 +17,13 @@ create table if not exists creatures (
   state text not null default 'alive' check (state in ('alive','agonizing','dead')),
   agonizing_since bigint,
   price_atomic bigint not null default 1000,
+  model text not null default 'standard',
   created_at timestamptz not null default now()
 );
 -- Backfill columns on clusters whose creatures table predates a later slice.
 alter table creatures add column if not exists agonizing_since bigint;
 alter table creatures add column if not exists price_atomic bigint not null default 1000;
+alter table creatures add column if not exists model text not null default 'standard';
 create table if not exists ledger_entries (
   id bigserial primary key,
   creature_id uuid not null references creatures(id),
