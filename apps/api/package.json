@@ -11,6 +11,7 @@
     "dev": "tsx watch src/index.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.110.0",
     "@circle-fin/developer-controlled-wallets": "^10.8.0",
     "@circle-fin/x402-batching": "^2.0.4",
     "@openzeppelin/merkle-tree": "^1.0.8",
