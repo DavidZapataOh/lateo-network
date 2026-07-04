@@ -85,4 +85,21 @@ describe('3.1 T3 — World SSE stream (read-model over server→client)', () => 
     const res = await fetch(`${base}/world/stream`, { method: 'POST' });
     expect(res.status).toBe(405);
   });
+
+  it('T7 reconnection: a NEW connection opens with a FRESH snapshot (no stale world)', async () => {
+    const a = await createCreature(pool, { walletAddress: '0xA', serviceType: 'url-to-json' });
+    await postCredit(pool, { creatureId: a, kind: 'feed', amount: 100_000n });
+    const first = await readSse(`${base}/world/stream`, 1); // connect, take the snapshot, drop
+    expect(first[0]!.event).toBe('snapshot');
+    expect(first[0]!.data.find((c) => c.id === a)!.liveAtomic).toBe('100000');
+
+    // the world moves while the client is disconnected
+    await postCredit(pool, { creatureId: a, kind: 'feed', amount: 50_000n });
+
+    // EventSource auto-reconnects; the server's contract makes staleness impossible:
+    // every connection STARTS with a fresh snapshot reflecting the new state.
+    const second = await readSse(`${base}/world/stream`, 1);
+    expect(second[0]!.event).toBe('snapshot'); // snapshot first, not a delta
+    expect(second[0]!.data.find((c) => c.id === a)!.liveAtomic).toBe('150000'); // fresh, not cached
+  });
 });

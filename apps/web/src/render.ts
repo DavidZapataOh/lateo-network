@@ -33,6 +33,7 @@ export interface Ctx2D {
   fill(): void;
   stroke(): void;
   fillRect(x: number, y: number, w: number, h: number): void;
+  clearRect(x: number, y: number, w: number, h: number): void;
   createRadialGradient(x0: number, y0: number, r0: number, x1: number, y1: number, r1: number): CanvasGradientLike;
   fillStyle: string | CanvasGradientLike;
   strokeStyle: string;
@@ -59,7 +60,8 @@ export function pulseEnvelope(light: Light, id: string, t: number): number {
   if (light.pulseKind === 'flatline') return 1; // tombstone glow is steady
   if (light.pulseKind === 'breath') {
     const phi = hash01(id, 7) * TAU; // per-creature phase — the world twinkles, it doesn't tick
-    const phase = 0.5 + 0.5 * Math.sin(TAU * light.pulseHz * t + phi); // 0..1
+    const hz = light.pulseHz * (0.82 + 0.36 * hash01(id, 8)); // per-creature PERIOD too (~4.6-6.7s):
+    const phase = 0.5 + 0.5 * Math.sin(TAU * hz * t + phi); // phase alone still left a faint collective wave
     return 0.62 + 0.38 * phase; // a visible 0.62..1.0 swell
   }
   const step = Math.floor(t * light.pulseHz); // flicker: a new random level each step
@@ -81,19 +83,20 @@ export function layout(ids: string[], w: number, h: number): Point[] {
   if (n === 0) return [];
   const cx = w / 2;
   const cy = h / 2;
-  // Vogel spiral fills a FIXED disc (the field never outgrows the canvas); sparse worlds shrink
-  // toward the center (intimacy) instead of scattering 9 lights across a stadium.
-  const intimacy = Math.min(1, Math.max(0.5, Math.sqrt(n / 40)));
-  const rMax = 0.4 * Math.min(w, h) * intimacy;
-  const stretch = Math.min(w / h, 1.5); // use some of a wide canvas, never overflow it
+  // Vogel spiral over a FIXED ELLIPSE that uses the whole canvas shape (a wide screen gets a wide
+  // world — no dead side margins); sparse worlds shrink toward the center (intimacy) rather than
+  // scattering 9 lights across a stadium, and the field never outgrows the canvas.
+  const intimacy = Math.min(1, Math.max(0.72, Math.sqrt(n / 40)));
+  const rx = 0.4 * w;
+  const ry = 0.4 * h;
   return ids.map((id, i) => {
     const jr = hash01(id, 1);
     const ja = hash01(id, 2);
-    const r = rMax * Math.sqrt((i + 0.6) / n) * (0.8 + 0.4 * jr); // jittered, max 1.2*rMax
+    const rNorm = intimacy * Math.sqrt((i + 0.6) / n) * (0.8 + 0.4 * jr); // jittered, max 1.2*intimacy
     const a = i * GOLDEN + ja * TAU;
     return {
-      x: cx + r * Math.cos(a) * stretch * 0.9,
-      y: cy + r * Math.sin(a) * 0.9,
+      x: cx + rNorm * Math.cos(a) * rx * 0.9,
+      y: cy + rNorm * Math.sin(a) * ry * 0.9,
     };
   });
 }
@@ -134,12 +137,10 @@ function drawTombstone(ctx: Ctx2D, p: Point, base: number): void {
 }
 
 export interface RenderConfig {
-  background: string;
   baseRadius: number;
   light: LightConfig;
 }
 export const DEFAULT_RENDER_CONFIG: RenderConfig = {
-  background: '#07070a', // a near-black night field (fireflies / bioluminescent sea)
   baseRadius: 14,
   light: DEFAULT_LIGHT_CONFIG,
 };
@@ -153,8 +154,10 @@ export function renderWorld(
   cfg: RenderConfig = DEFAULT_RENDER_CONFIG,
 ): void {
   ctx.globalAlpha = 1;
-  ctx.fillStyle = cfg.background;
-  ctx.fillRect(0, 0, dims.width, dims.height);
+  // The night's depth (vignette) is STATIC, so it lives in the canvas CSS background (GPU-composited
+  // once) — re-rasterizing a full-screen gradient per frame cost ~half the frame budget at 1080p.
+  // The canvas itself just clears to transparent each frame.
+  ctx.clearRect(0, 0, dims.width, dims.height);
   const pts = layout(snapshot.map((c) => c.id), dims.width, dims.height);
   const driftScale = 0.012 * Math.min(dims.width, dims.height);
   snapshot.forEach((c, i) => {

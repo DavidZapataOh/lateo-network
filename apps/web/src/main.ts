@@ -26,9 +26,22 @@ function apply(e: MessageEvent): void {
   }));
 }
 
-const stream = new EventSource('/world/stream');
-stream.addEventListener('snapshot', apply);
-stream.addEventListener('delta', apply);
+// PERF BENCH MODE ONLY (?bench=N): synthetic creatures to measure the ~150 frame budget (3.1 T6).
+// Never used for the demo — the demo world is ALWAYS the real read-model stream below.
+const benchN = Number(new URLSearchParams(window.location.search).get('bench') ?? '0');
+if (benchN > 0) {
+  const states = ['alive', 'alive', 'alive', 'agonizing', 'dead'] as const;
+  snapshot = Array.from({ length: benchN }, (_, i) => ({
+    id: `bench-${i}`,
+    state: states[i % states.length]!,
+    runwaySeconds: (i * 37) % 900,
+    lastActivityAt: i % 3 === 0 ? Date.now() / 1000 : null,
+  }));
+} else {
+  const stream = new EventSource('/world/stream');
+  stream.addEventListener('snapshot', apply);
+  stream.addEventListener('delta', apply);
+}
 
 const canvas = document.getElementById('world') as HTMLCanvasElement;
 // The real 2D context satisfies Ctx2D structurally except fillStyle's CanvasPattern arm (unused here).

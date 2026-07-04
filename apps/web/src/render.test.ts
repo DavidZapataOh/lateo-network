@@ -13,6 +13,7 @@ class Rec implements Ctx2D {
   strokes = 0;
   fills = 0;
   fillRects = 0;
+  clearRects = 0;
   arcs = 0;
   fillStyle: string | CanvasGradientLike = '';
   strokeStyle = '';
@@ -33,6 +34,9 @@ class Rec implements Ctx2D {
   fillRect(): void {
     this.fillRects++;
   }
+  clearRect(): void {
+    this.clearRects++;
+  }
   createRadialGradient(): CanvasGradientLike {
     const g = new RecGrad();
     this.grads.push(g);
@@ -43,12 +47,15 @@ class Rec implements Ctx2D {
 const DIMS = { width: 800, height: 600 };
 const alive = (id: string): WorldCreature => ({ id, state: 'alive', runwaySeconds: 60, lastActivityAt: null });
 const coreAlpha = (g: RecGrad): number => Number(/,([0-9.]+)\)$/.exec(g.stops[0]![1])![1]);
+// The static vignette lives in CSS (perf: never re-rasterized) — every gradient here is a glow.
+const glows = (ctx: Rec): RecGrad[] => ctx.grads;
 
 describe('3.1 T5 — Canvas render (dumb consumer of stateToLight)', () => {
-  it('empty snapshot: clears the night, draws nothing else', () => {
+  it('empty snapshot: clears to transparent night, draws nothing else', () => {
     const ctx = new Rec();
     renderWorld(ctx, [], DIMS, 0);
-    expect(ctx.fillRects).toBe(1); // the background clear
+    expect(ctx.clearRects).toBe(1); // transparent clear over the CSS night
+    expect(ctx.fillRects).toBe(0); // no per-frame background rasterization (perf)
     expect(ctx.grads.length).toBe(0);
     expect(ctx.strokes).toBe(0);
     expect(ctx.fills).toBe(0);
@@ -58,7 +65,7 @@ describe('3.1 T5 — Canvas render (dumb consumer of stateToLight)', () => {
     const ctx = new Rec();
     const snap = Array.from({ length: 150 }, (_, i) => alive(`c${i}`));
     renderWorld(ctx, snap, DIMS, 0);
-    expect(ctx.grads.length).toBe(150); // one radial-gradient glow each
+    expect(glows(ctx).length).toBe(150); // one radial-gradient glow each
     expect(ctx.fills).toBe(150);
     const pts = layout(snap.map((c) => c.id), DIMS.width, DIMS.height);
     expect(pts).toHaveLength(150);
@@ -90,7 +97,7 @@ describe('3.1 T5 — Canvas render (dumb consumer of stateToLight)', () => {
       { id: 'g', state: 'agonizing', runwaySeconds: 2, lastActivityAt: null },
     ];
     renderWorld(ctx, snap, DIMS, 0);
-    expect(ctx.grads.length).toBe(2); // alive + agonizing glow; the dead one does not
+    expect(glows(ctx).length).toBe(2); // alive + agonizing glow; the dead one does not
     expect(ctx.strokes).toBe(1); // the tombstone ring
   });
 
@@ -109,7 +116,7 @@ describe('3.1 T5 — Canvas render (dumb consumer of stateToLight)', () => {
     const alphas = [0, 1, 2, 3, 4, 5].map((s) => {
       const ctx = new Rec();
       renderWorld(ctx, snap, DIMS, s);
-      return coreAlpha(ctx.grads[0]!);
+      return coreAlpha(glows(ctx)[0]!);
     });
     expect(Math.max(...alphas) - Math.min(...alphas)).toBeGreaterThan(0.15); // a visible swell
   });
@@ -119,7 +126,7 @@ describe('3.1 T5 — Canvas render (dumb consumer of stateToLight)', () => {
     const diffs = [0, 1, 2].map((s) => {
       const ctx = new Rec();
       renderWorld(ctx, snap, DIMS, s);
-      return coreAlpha(ctx.grads[0]!) - coreAlpha(ctx.grads[1]!);
+      return coreAlpha(glows(ctx)[0]!) - coreAlpha(glows(ctx)[1]!);
     });
     expect(diffs.some((d) => Math.abs(d) > 0.02)).toBe(true); // they are not in lockstep
   });
