@@ -56,6 +56,11 @@ export class Metabolism {
     this.sinceLastMaterialize++;
   }
 
+  /** Accrue an extra cost (e.g. the price of one thought) into the burn the materializer settles. */
+  accrue(amount: Atomic): void {
+    this.accumulated += amount;
+  }
+
   /**
    * Compute the current runway (discounting accumulated burn) and emit EXACTLY ONE `threshold` event
    * when it first crosses to <=0 (latched until it recovers). The pulse only SIGNALS — it does NOT
