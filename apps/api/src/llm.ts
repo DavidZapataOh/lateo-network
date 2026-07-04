@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { atomicToUsdc, type Atomic } from './money.js';
 import type { LlmBrain, Decision, DecisionContext } from './decide.js';
 import type { BrainAction, ModelId } from './guardrail.js';
 
@@ -58,24 +59,56 @@ function firstJson<T>(resp: Anthropic.Message): T {
   return JSON.parse(block.text) as T;
 }
 
+// The prompt INFORMS the decision space (what actions exist, when they are relevant, the numeric
+// scale) but NEVER dictates a threshold->action rule — that strategy is the LLM's to choose, or the
+// ablation is meaningless (ADR-0017). "Cheaper = smaller number" fixes the atomic-scale confusion.
 const BRAIN_SYSTEM = [
-  'You are the survival brain of an autonomous creature that must EARN USDC to pay for its own compute, or it dies.',
-  'Choose exactly ONE action from the frozen set. Price is atomic 6-decimal USDC (1000000 = 1 USDC).',
-  'Model roster trades service quality against cost/burn: economy (cheap, basic), standard (mid), premium (best, priciest).',
-  'Reason about the situation — there is no single right answer. Low runway with no clients favors survival',
-  '(cheaper model, lower price, or requesting feed); healthy runway with strong demand favors capturing value',
-  '(raising price). Return your decision as JSON with a short, honest reason.',
-].join(' ');
+  'You are the survival brain of an autonomous creature. It EARNS USDC by selling a service to clients,',
+  'and must earn enough to pay for its own compute or it dies. You choose exactly ONE action per turn.',
+  '',
+  'MONEY IS IN ATOMIC UNITS: 1000000 atomic = 1.00 USDC. You are given the current price and the legal',
+  'price range in BOTH atomic and USDC — reason in those exact numbers. A LOWER price is a SMALLER atomic',
+  'number; a HIGHER price is a LARGER atomic number.',
+  '',
+  'Your action space (frozen):',
+  '- set_price(price): set your service price, within the legal [min,max]. Lowering it may attract more',
+  '  clients; raising it captures more USDC per client.',
+  '- set_model(economy|standard|premium): a cheaper model BURNS LESS USDC (extends your runway) at some',
+  '  cost to service quality; a pricier model burns more for higher quality.',
+  '- request_feed: ask a patron for a survival top-up (a lifeline, not earned income).',
+  '- hold: change nothing this turn.',
+  '',
+  'Your situation gives your runway (seconds of life left), whether clients are arriving, and your current',
+  'price and model. When runway is critical you are near death — your survival options include requesting',
+  'feed, switching to a cheaper model, or cutting price to draw clients; evaluate which, if any, actually',
+  'helps given whether clients are present and where your price already is. When runway is healthy and demand',
+  'is strong, capturing more value (raising price) may be worth it. There is no single right answer — reason',
+  'about YOUR specific situation and pick ONE action. Your action MUST be consistent with your reason: if your',
+  'reason says cut the price, the price number must go DOWN; if it says raise, it must go UP.',
+].join('\n');
 
 /** The real decision maker: Claude Haiku behind the LlmBrain interface (ADR-0017 proposes, guardrail validates). */
 export class AnthropicLlmBrain implements LlmBrain {
-  constructor(private readonly client: Anthropic = anthropicClient()) {}
+  private readonly client: Anthropic;
+  private readonly bounds: { minPrice: Atomic; maxPrice: Atomic };
+
+  constructor(
+    client: Anthropic = anthropicClient(),
+    bounds: { minPrice: Atomic; maxPrice: Atomic } = { minPrice: 1000n, maxPrice: 1_000_000n },
+  ) {
+    this.client = client;
+    this.bounds = bounds;
+  }
 
   async propose(ctx: DecisionContext): Promise<Decision> {
     const user = JSON.stringify({
       runway_seconds: ctx.runway,
       life_state: ctx.lifeState,
-      current_price_atomic: ctx.price.toString(),
+      current_price: { atomic: ctx.price.toString(), usdc: atomicToUsdc(ctx.price) },
+      legal_price_range: {
+        min: { atomic: this.bounds.minPrice.toString(), usdc: atomicToUsdc(this.bounds.minPrice) },
+        max: { atomic: this.bounds.maxPrice.toString(), usdc: atomicToUsdc(this.bounds.maxPrice) },
+      },
       current_model: ctx.model,
       recent_clients: ctx.recentClients,
     });
