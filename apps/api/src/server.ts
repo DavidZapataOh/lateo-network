@@ -1,22 +1,32 @@
 import http from 'node:http';
+import { randomUUID } from 'node:crypto';
 import type pg from 'pg';
+import type Anthropic from '@anthropic-ai/sdk';
 import { listCreatures } from './readmodel.js';
-import { QuoteStore } from './quote.js';
-import { requirementsFor } from './rail.js';
+import { QuoteStore, isMenuService } from './quote.js';
+import { requirementsFor, verify, type SignedAuthorization } from './rail.js';
 import type { DemandEvent } from './demand.js';
+import { serveAndSettle } from './service.js';
+import { authorizeIncome, type ServiceType } from './ledger.js';
+import { runService } from './serve.js';
+import { anthropicClient } from './llm.js';
+import type { ModelId } from './guardrail.js';
 
 /** Short quote TTL (ADR-0007): re-pricing security is our nonce/TTL, not the >=30d EIP-3009 window. */
 export const QUOTE_TTL_S = 120;
 
 export interface ServerOptions {
-  /** Sink for client-incoming demand signals (fed to the brain/actor, post-2.3). */
+  /** Sink for client-incoming demand signals (fed to the running actor loop). */
   onDemand?: (ev: DemandEvent) => void;
+  /** Anthropic client for the summary service (lazily created if omitted). */
+  anthropic?: Anthropic;
 }
 
 /**
  * HTTP server. `GET /health`, `GET /creatures` (World read model), and the state-gated x402
- * `POST /c/{id}` service route: alive -> 402 with a {price, nonce, ttl} quote (ADR-0007) and a
- * demand event. The paid-request path (verify -> serve -> settle/void) lands with the services.
+ * `POST /c/{id}` service route: no payment -> 402 quote (ADR-0007); with an `x-payment` header ->
+ * validate quote+menu -> verify -> DELIVER the service -> settle (or void) -> consume the nonce ->
+ * return the deliverable, and emit a real-sale demand event the actor loop consumes.
  */
 export function createServer(pool: pg.Pool, opts: ServerOptions = {}): http.Server {
   const quotes = new QuoteStore();
@@ -48,7 +58,7 @@ async function handle(
   }
   const service = /^\/c\/([^/?]+)/.exec(url);
   if (req.method === 'POST' && service) {
-    await handleService(res, pool, quotes, opts, service[1]!);
+    await handleService(req, res, pool, quotes, opts, service[1]!);
     return;
   }
   send(res, 404, { error: 'not_found' });
@@ -59,14 +69,11 @@ interface CreatureRow {
   wallet_address: string;
   price_atomic: string;
   service_type: string;
+  model: string;
 }
 
-/**
- * State gate (ADR-0006) + quote (ADR-0007): dead -> 410 Gone (no payment); agonizing -> 409, no
- * quote (no service, no payment); alive -> 402 with a {price, nonce, ttl} quote and Arc payment
- * requirements. Non-alive paths capture nothing.
- */
 async function handleService(
+  req: http.IncomingMessage,
   res: http.ServerResponse,
   pool: pg.Pool,
   quotes: QuoteStore,
@@ -74,7 +81,7 @@ async function handleService(
   id: string,
 ): Promise<void> {
   const r = await pool.query<CreatureRow>(
-    `select state, wallet_address, price_atomic, service_type from creatures where id = $1`,
+    `select state, wallet_address, price_atomic, service_type, model from creatures where id = $1`,
     [id],
   );
   const row = r.rows[0];
@@ -83,18 +90,22 @@ async function handleService(
     return;
   }
   if (row.state === 'dead') {
-    send(res, 410, { error: 'gone', state: row.state });
+    send(res, 410, { error: 'gone', state: row.state }); // tombstone, no payment
     return;
   }
   if (row.state === 'agonizing') {
     send(res, 409, { error: 'unavailable', state: row.state }); // no service, no 402, no payment
     return;
   }
-  // alive: issue a fresh quote (price fixed by the creature) with a short-lived nonce.
+  // alive: a payment header means the client is redeeming a quote; otherwise issue a fresh quote.
+  if (req.headers['x-payment']) {
+    await handlePaidRequest(req, res, pool, quotes, opts, id, row);
+    return;
+  }
   const price = BigInt(row.price_atomic);
   const now = Math.floor(Date.now() / 1000);
   const quote = quotes.issue(id, price, QUOTE_TTL_S, now);
-  // A live client asked -> emit a demand signal carrying context (service, price, timing).
+  // a live client asked (interest) -> arrival demand signal (the paid path emits a stronger 'sale')
   opts.onDemand?.({ creatureId: id, kind: 'arrival', service: row.service_type, amount: price, at: now });
   send(res, 402, {
     error: 'payment_required',
@@ -103,6 +114,85 @@ async function handleService(
     ttlS: quote.ttlS,
     requirements: requirementsFor(row.wallet_address, price),
   });
+}
+
+/**
+ * The paid x402 path (2.3): validate the quote (re-pricing security) + frozen menu, verify the
+ * EIP-3009 authorization (amount enforced by the signature vs the quoted requirements), record the
+ * pending income, DELIVER then capture (serveAndSettle — settle if alive, void if delivery fails or
+ * the creature died), consume the single-use nonce, and emit a real-sale demand event.
+ */
+async function handlePaidRequest(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  pool: pg.Pool,
+  quotes: QuoteStore,
+  opts: ServerOptions,
+  id: string,
+  row: CreatureRow,
+): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  const body = await readJsonBody(req);
+  const nonce = typeof body.nonce === 'string' ? body.nonce : '';
+  const url = typeof body.url === 'string' ? body.url : '';
+
+  const q = quotes.validate(nonce, now); // ADR-0007: unknown/expired -> reject, no value touched
+  if (!q || q.creatureId !== id) {
+    send(res, 402, { error: 'invalid_or_expired_quote' });
+    return;
+  }
+  if (!isMenuService(row.service_type)) {
+    send(res, 400, { error: 'service_not_in_menu' }); // §9 frozen menu
+    return;
+  }
+  let payload: unknown;
+  try {
+    payload = JSON.parse(Buffer.from(String(req.headers['x-payment']), 'base64').toString('utf8'));
+  } catch {
+    send(res, 400, { error: 'bad_payment_header' });
+    return;
+  }
+  const auth: SignedAuthorization = { payload, requirements: requirementsFor(row.wallet_address, q.price) };
+  const v = await verify(auth); // authorize: moves NO value; wrong amount -> signature invalid
+  if (!v.isValid) {
+    send(res, 402, { error: 'payment_invalid', reason: v.invalidReason });
+    return;
+  }
+
+  const entryId = await authorizeIncome(pool, {
+    creatureId: id,
+    amount: q.price,
+    nonce: randomUUID(),
+    counterparty: v.payer,
+  });
+  const client = opts.anthropic ?? anthropicClient();
+  const result = await serveAndSettle(pool, {
+    creatureId: id,
+    entryId,
+    auth,
+    deliver: () => runService(row.service_type as ServiceType, { url }, { client, model: row.model as ModelId }),
+  });
+  quotes.consume(nonce); // single-use (INV-4 store side)
+  opts.onDemand?.({ creatureId: id, kind: 'sale', service: row.service_type, amount: q.price, at: now });
+
+  if (result.outcome === 'voided') {
+    // delivery failed or the creature died mid-request -> the buyer keeps its money (ADR-0006)
+    send(res, 502, { outcome: 'voided', note: 'delivery failed; payment voided, you keep your money' });
+    return;
+  }
+  send(res, 200, { outcome: 'served', settleId: result.settleId, result: result.result });
+}
+
+async function readJsonBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  for await (const c of req) chunks.push(c as Buffer);
+  const raw = Buffer.concat(chunks).toString('utf8');
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
 }
 
 function send(res: http.ServerResponse, code: number, body: unknown): void {
