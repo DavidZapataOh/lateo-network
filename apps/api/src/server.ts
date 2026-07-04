@@ -2,12 +2,13 @@ import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import type pg from 'pg';
 import type Anthropic from '@anthropic-ai/sdk';
-import { listCreatures } from './readmodel.js';
+import { listCreatures, getWorldSnapshot } from './readmodel.js';
 import { QuoteStore, isMenuService } from './quote.js';
 import { requirementsFor, verify, type SignedAuthorization } from './rail.js';
 import type { DemandEvent } from './demand.js';
 import { serveAndSettle } from './service.js';
 import { authorizeIncome, type ServiceType } from './ledger.js';
+import type { Atomic } from './money.js';
 import { runService } from './serve.js';
 import { anthropicClient } from './llm.js';
 import type { ModelId } from './guardrail.js';
@@ -20,6 +21,8 @@ export interface ServerOptions {
   onDemand?: (ev: DemandEvent) => void;
   /** Anthropic client for the summary service (lazily created if omitted). */
   anthropic?: Anthropic;
+  /** The World SSE stream (ADR-0013 read-model): the burn rate the projection uses for runway. */
+  world?: { burnRatePerSec: Atomic; intervalMs?: number };
 }
 
 /**
@@ -54,6 +57,14 @@ async function handle(
   }
   if (req.method === 'GET' && url === '/creatures') {
     send(res, 200, await listCreatures(pool));
+    return;
+  }
+  if (url === '/world/stream') {
+    if (req.method !== 'GET') {
+      send(res, 405, { error: 'method_not_allowed' }); // read-model: no write vector (ADR-0013)
+      return;
+    }
+    streamWorld(req, res, pool, opts);
     return;
   }
   const service = /^\/c\/([^/?]+)/.exec(url);
@@ -181,6 +192,38 @@ async function handlePaidRequest(
     return;
   }
   send(res, 200, { outcome: 'served', settleId: result.settleId, result: result.result });
+}
+
+/**
+ * The World SSE stream (ADR-0013): server→client only (a read-model has no write vector, so no
+ * websocket). Emits an initial `snapshot` then one `delta` per pulse (~1/s, coalesced — NOT
+ * per-value-event, so smoothness never couples to the ~800ms rail signing, ADR-0003). Only reads.
+ */
+function streamWorld(req: http.IncomingMessage, res: http.ServerResponse, pool: pg.Pool, opts: ServerOptions): void {
+  const burnRatePerSec = opts.world?.burnRatePerSec ?? 0n;
+  const intervalMs = opts.world?.intervalMs ?? 1000;
+  res.writeHead(200, {
+    'content-type': 'text/event-stream',
+    'cache-control': 'no-cache',
+    connection: 'keep-alive',
+  });
+  const emit = (event: string, data: unknown): void => {
+    if (res.writableEnded) return;
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data, bigintReplacer)}\n\n`);
+  };
+  const push = (event: string): Promise<void> =>
+    getWorldSnapshot(pool, { burnRatePerSec })
+      .then((snap) => emit(event, snap))
+      .catch(() => undefined); // a projection hiccup must not kill the stream
+  void push('snapshot');
+  const timer = setInterval(() => void push('delta'), intervalMs);
+  const stop = (): void => clearInterval(timer);
+  req.on('close', stop);
+  res.on('close', stop);
+}
+
+function bigintReplacer(_key: string, value: unknown): unknown {
+  return typeof value === 'bigint' ? value.toString() : value;
 }
 
 async function readJsonBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
