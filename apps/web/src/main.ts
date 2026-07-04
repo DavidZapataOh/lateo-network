@@ -1,0 +1,58 @@
+// The World page (ADR-0013): a pure read-model client. It opens the SSE stream, keeps the latest
+// REAL snapshot (no synthetic data — every light is a creature row in the ledger), and paints it
+// with renderWorld on a requestAnimationFrame loop. It never writes; EventSource auto-reconnects
+// and the server re-sends a fresh snapshot on connect (stale-proof re-sync).
+import { renderWorld, DEFAULT_RENDER_CONFIG, type WorldCreature, type Ctx2D } from './render.js';
+import { DEFAULT_LIGHT_CONFIG } from './stateToLight.js';
+
+/** The SSE wire shape (bigints as strings; Infinity runway serializes to null). */
+interface WireCreature {
+  id: string;
+  state: 'alive' | 'agonizing' | 'dead';
+  liveAtomic: string;
+  runwaySeconds: number | null;
+  lastActivityAt: number | null;
+}
+
+let snapshot: WorldCreature[] = [];
+
+function apply(e: MessageEvent): void {
+  const rows = JSON.parse(e.data as string) as WireCreature[];
+  snapshot = rows.map((r) => ({
+    id: r.id,
+    state: r.state,
+    runwaySeconds: r.runwaySeconds ?? Infinity, // JSON has no Infinity
+    lastActivityAt: r.lastActivityAt,
+  }));
+}
+
+const stream = new EventSource('/world/stream');
+stream.addEventListener('snapshot', apply);
+stream.addEventListener('delta', apply);
+
+const canvas = document.getElementById('world') as HTMLCanvasElement;
+// The real 2D context satisfies Ctx2D structurally except fillStyle's CanvasPattern arm (unused here).
+const ctx = canvas.getContext('2d') as unknown as Ctx2D;
+
+function fit(): void {
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.floor(window.innerWidth * dpr);
+  canvas.height = Math.floor(window.innerHeight * dpr);
+}
+fit();
+window.addEventListener('resize', fit);
+
+// Presentation scale: creatures live minutes-to-hours, so "full bright" = 10 minutes of runway.
+const cfg = {
+  ...DEFAULT_RENDER_CONFIG,
+  light: { ...DEFAULT_LIGHT_CONFIG, fullRunwaySeconds: 600 },
+  baseRadius: 22,
+};
+
+const t0 = performance.now();
+function frame(): void {
+  const t = (performance.now() - t0) / 1000;
+  renderWorld(ctx, snapshot, { width: canvas.width, height: canvas.height }, t, cfg);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);

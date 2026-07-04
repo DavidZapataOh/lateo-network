@@ -60,7 +60,26 @@ describe('3.1 T5 — Canvas render (dumb consumer of stateToLight)', () => {
     renderWorld(ctx, snap, DIMS, 0);
     expect(ctx.grads.length).toBe(150); // one radial-gradient glow each
     expect(ctx.fills).toBe(150);
-    expect(layout(150, DIMS.width, DIMS.height)).toHaveLength(150);
+    const pts = layout(snap.map((c) => c.id), DIMS.width, DIMS.height);
+    expect(pts).toHaveLength(150);
+    for (const p of pts) {
+      expect(p.x).toBeGreaterThan(-DIMS.width * 0.2); // organic scatter stays in a sane field
+      expect(p.x).toBeLessThan(DIMS.width * 1.2);
+    }
+  });
+
+  it('append rescales the field UNIFORMLY: angles keep, one common radial factor (no reshuffle)', () => {
+    const cx = DIMS.width / 2;
+    const cy = DIMS.height / 2;
+    const before = layout(['a', 'b', 'c'], DIMS.width, DIMS.height);
+    const after = layout(['a', 'b', 'c', 'd'], DIMS.width, DIMS.height); // a newcomer joins
+    const angle = (p: { x: number; y: number }): number => Math.atan2(p.y - cy, p.x - cx);
+    const dist = (p: { x: number; y: number }): number => Math.hypot(p.x - cx, p.y - cy);
+    const ratios = [0, 1, 2].map((i) => dist(after[i]!) / dist(before[i]!));
+    for (let i = 0; i < 3; i++) {
+      expect(angle(after[i]!)).toBeCloseTo(angle(before[i]!), 10); // direction never changes
+      expect(ratios[i]!).toBeCloseTo(ratios[0]!, 10); // one world-wide scale factor
+    }
   });
 
   it('a dead creature is a tombstone (stroke), NOT a glow (no gradient)', () => {
@@ -86,10 +105,22 @@ describe('3.1 T5 — Canvas render (dumb consumer of stateToLight)', () => {
 
   it('ANIMATES: a breathing creature’s core intensity varies across time', () => {
     const snap = [alive('a')];
-    const t0 = new Rec();
-    const tPeak = new Rec();
-    renderWorld(t0, snap, DIMS, 0); // sin=0
-    renderWorld(tPeak, snap, DIMS, 1 / (4 * 0.18)); // quarter breath cycle -> sin peaks
-    expect(coreAlpha(tPeak.grads[0]!)).toBeGreaterThan(coreAlpha(t0.grads[0]!));
+    // per-creature phase means no fixed t is a guaranteed peak — sample a full breath cycle
+    const alphas = [0, 1, 2, 3, 4, 5].map((s) => {
+      const ctx = new Rec();
+      renderWorld(ctx, snap, DIMS, s);
+      return coreAlpha(ctx.grads[0]!);
+    });
+    expect(Math.max(...alphas) - Math.min(...alphas)).toBeGreaterThan(0.15); // a visible swell
+  });
+
+  it('OFF-SYNC: two creatures breathe with different phases (no global metronome)', () => {
+    const snap = [alive('a'), alive('b')];
+    const diffs = [0, 1, 2].map((s) => {
+      const ctx = new Rec();
+      renderWorld(ctx, snap, DIMS, s);
+      return coreAlpha(ctx.grads[0]!) - coreAlpha(ctx.grads[1]!);
+    });
+    expect(diffs.some((d) => Math.abs(d) > 0.02)).toBe(true); // they are not in lockstep
   });
 });

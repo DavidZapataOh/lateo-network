@@ -61,7 +61,7 @@ export const DEFAULT_LIGHT_CONFIG: LightConfig = {
   minAliveBrightness: 0.25,
   tombstoneBrightness: 0.06,
   breathHz: 0.18, // ~5.5s cycle — a calm alive breath (Apple Watch Breathe: 4-10 breaths/min)
-  flickerHz: 4, // rapid, arrhythmic "last breath" (the renderer adds jitter)
+  flickerHz: 2.5, // guttering "last breath" — slow enough to read as dying, not electrical noise
   sparkTauSeconds: 0.6, // dinoflagellate flash decay (~hundreds of ms)
   sparkWindowSeconds: 3,
 };

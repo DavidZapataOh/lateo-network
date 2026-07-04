@@ -5,5 +5,10 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "playwright": "^1.61.1",
+    "tsx": "^4.19.2",
+    "vite": "^8.1.3"
   }
 }
