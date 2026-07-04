@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { renderWorld, layout, type Ctx2D, type CanvasGradientLike, type WorldCreature } from './render.js';
+import { bootstrap, observe, type PhaseState } from './deathPhase.js';
 
 class RecGrad implements CanvasGradientLike {
   stops: Array<[number, string]> = [];
@@ -37,6 +38,11 @@ class Rec implements Ctx2D {
   clearRect(): void {
     this.clearRects++;
   }
+  moveTo(): void {}
+  lineTo(): void {
+    this.lines++;
+  }
+  lines = 0;
   createRadialGradient(): CanvasGradientLike {
     const g = new RecGrad();
     this.grads.push(g);
@@ -129,5 +135,55 @@ describe('3.1 T5 — Canvas render (dumb consumer of stateToLight)', () => {
       return coreAlpha(glows(ctx)[0]!) - coreAlpha(glows(ctx)[1]!);
     });
     expect(diffs.some((d) => Math.abs(d) > 0.02)).toBe(true); // they are not in lockstep
+  });
+});
+
+describe('3.2 — a LIVE death plays the 4-beat sequence; the world holds its breath', () => {
+  const dead = (id: string): WorldCreature => ({ id, state: 'dead', runwaySeconds: 0, lastActivityAt: null });
+  /** A death OBSERVED live at t=100 (agony first, then the real dead delta). */
+  const liveDeath = (): PhaseState => observe(observe(bootstrap('alive'), 'agonizing', 90), 'dead', 100);
+
+  it('bootstrap dead (page load) = tombstone immediately — past deaths are never replayed', () => {
+    const ctx = new Rec();
+    renderWorld(ctx, [dead('d')], DIMS, 100.2); // no deaths map: bootstrap path
+    expect(ctx.strokes).toBe(1); // tombstone ring, not a flare
+    expect(glows(ctx).length).toBe(0);
+  });
+
+  it('beats render distinctly: flare glow -> flatline LINE -> cooling glow -> tombstone', () => {
+    const deaths = new Map([['d', liveDeath()]]);
+    const at = (t: number): Rec => {
+      const ctx = new Rec();
+      renderWorld(ctx, [dead('d')], DIMS, t, undefined, deaths);
+      return ctx;
+    };
+    expect(glows(at(100.2)).length).toBe(1); // last-beat: a radial flare
+    const flat = at(100.6); // flatline: a stroked line, no glow
+    expect(flat.lines).toBe(1);
+    expect(glows(flat).length).toBe(0);
+    expect(glows(at(101.2)).length).toBe(1); // ember-cooling: a shrinking glow
+    expect(at(102.5).strokes).toBe(1); // after the sequence: the grave remains
+  });
+
+  it('THE GAZE: while one dies, the OTHER living light dims (contrast walks the eye)', () => {
+    const deaths = new Map([
+      ['d', liveDeath()],
+      ['a', bootstrap('alive')],
+    ]);
+    const normal = new Rec();
+    renderWorld(normal, [alive('a')], DIMS, 100.2); // no death in flight
+    const dimmed = new Rec();
+    renderWorld(dimmed, [alive('a'), dead('d')], DIMS, 100.2, undefined, deaths);
+    // 'a' glow is grads[0] in both renders (the dying one draws AFTER it in the snapshot order)
+    expect(coreAlpha(glows(dimmed)[0]!)).toBeLessThan(coreAlpha(glows(normal)[0]!) * 0.5);
+  });
+
+  it('the sequence ends and the world recovers: no residual dim', () => {
+    const deaths = new Map([['d', liveDeath()]]);
+    const during = new Rec();
+    renderWorld(during, [alive('a'), dead('d')], DIMS, 100.2, undefined, deaths);
+    const after = new Rec();
+    renderWorld(after, [alive('a'), dead('d')], DIMS, 103, undefined, deaths); // sequence over
+    expect(coreAlpha(glows(after)[0]!)).toBeGreaterThan(coreAlpha(glows(during)[0]!) * 2);
   });
 });

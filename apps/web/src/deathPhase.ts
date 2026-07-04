@@ -43,6 +43,16 @@ export interface PhaseState {
 export const INITIAL: PhaseState = { state: 'alive', diedAt: null };
 
 /**
+ * Seed a PhaseState from a FIRST-snapshot state (page load / reconnect). A creature that was
+ * already dead gets `diedAt: -Infinity` so it rests at tombstone immediately: the page never
+ * replays past deaths — the sequence is earned only by a death OBSERVED live (fidelity: we do not
+ * script drama that did not happen in front of the viewer).
+ */
+export function bootstrap(state: LifeState): PhaseState {
+  return state === 'dead' ? { state: 'dead', diedAt: -Infinity } : { state, diedAt: null };
+}
+
+/**
  * Fold one REAL state observation into the phase state. Pure — returns a new PhaseState.
  * Death is terminal: after `dead`, every later observation is ignored (a spurious `alive` can
  * never animate a revive; the real machine (2.1) never emits it, and even if a buggy stream did,

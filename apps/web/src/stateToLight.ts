@@ -78,7 +78,8 @@ const TOMBSTONE_COLOR: RGB = { r: 42, g: 35, b: 32 }; // #2A2320 a dim warm-gray
 
 const clamp = (x: number, lo: number, hi: number): number => (x < lo ? lo : x > hi ? hi : x);
 
-function emberColor(v: number): RGB {
+/** Blackbody ember temperature for vitality v∈[0,1] — exported so the death beats cool on the SAME scale. */
+export function emberColor(v: number): RGB {
   const t = clamp(v, 0, 1);
   for (let i = 1; i < STOPS.length; i++) {
     const a = STOPS[i - 1]!;

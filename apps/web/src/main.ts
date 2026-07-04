@@ -4,6 +4,7 @@
 // and the server re-sends a fresh snapshot on connect (stale-proof re-sync).
 import { renderWorld, DEFAULT_RENDER_CONFIG, type WorldCreature, type Ctx2D } from './render.js';
 import { DEFAULT_LIGHT_CONFIG } from './stateToLight.js';
+import { bootstrap, observe, type PhaseState } from './deathPhase.js';
 
 /** The SSE wire shape (bigints as strings; Infinity runway serializes to null). */
 interface WireCreature {
@@ -15,9 +16,21 @@ interface WireCreature {
 }
 
 let snapshot: WorldCreature[] = [];
+// Death phase tracking (3.2): first sight of a creature -> bootstrap (a past death is just a
+// tombstone; the page never replays drama nobody watched); every later delta -> observe, so a death
+// that happens IN FRONT of the viewer plays its 4-beat sequence anchored at the observed moment.
+// Reduced-motion: no sequence — an instant, faithful landing on the same terminal phase.
+const deaths = new Map<string, PhaseState>();
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 function apply(e: MessageEvent): void {
   const rows = JSON.parse(e.data as string) as WireCreature[];
+  const nowSec = performance.now() / 1000; // same clock the render loop queries phases with
+  for (const r of rows) {
+    const prev = deaths.get(r.id);
+    if (prev === undefined || reducedMotion) deaths.set(r.id, bootstrap(r.state));
+    else deaths.set(r.id, observe(prev, r.state, nowSec));
+  }
   snapshot = rows.map((r) => ({
     id: r.id,
     state: r.state,
@@ -60,12 +73,14 @@ const cfg = {
   ...DEFAULT_RENDER_CONFIG,
   light: { ...DEFAULT_LIGHT_CONFIG, fullRunwaySeconds: 600 },
   baseRadius: 22,
+  motionScale: reducedMotion ? 0 : 1, // cosmetic drift is motion; the palette/dim are not
 };
 
-const t0 = performance.now();
 function frame(): void {
-  const t = (performance.now() - t0) / 1000;
-  renderWorld(ctx, snapshot, { width: canvas.width, height: canvas.height }, t, cfg);
+  // ONE clock everywhere: phase observations (deaths) and the render both read performance.now(),
+  // so a death's beats anchor exactly at the observed moment.
+  const t = performance.now() / 1000;
+  renderWorld(ctx, snapshot, { width: canvas.width, height: canvas.height }, t, cfg, deaths);
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);

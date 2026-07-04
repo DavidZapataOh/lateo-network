@@ -4,11 +4,13 @@
 // value. A single canvas, batched draws — no DOM-per-creature (the ~150 scale ceiling, ADR-0013).
 import {
   stateToLight,
+  emberColor,
   DEFAULT_LIGHT_CONFIG,
   type LifeState,
   type Light,
   type LightConfig,
 } from './stateToLight.js';
+import { phaseAt, beatProgress, worldDim, bootstrap, type PhaseState } from './deathPhase.js';
 
 export interface WorldCreature {
   id: string;
@@ -34,6 +36,8 @@ export interface Ctx2D {
   stroke(): void;
   fillRect(x: number, y: number, w: number, h: number): void;
   clearRect(x: number, y: number, w: number, h: number): void;
+  moveTo(x: number, y: number): void;
+  lineTo(x: number, y: number): void;
   createRadialGradient(x0: number, y0: number, r0: number, x1: number, y1: number, r1: number): CanvasGradientLike;
   fillStyle: string | CanvasGradientLike;
   strokeStyle: string;
@@ -127,8 +131,79 @@ function drawLight(ctx: Ctx2D, light: Light, p: Point, id: string, t: number, ba
   ctx.fill();
 }
 
-function drawTombstone(ctx: Ctx2D, p: Point, base: number): void {
+/**
+ * The 4-beat death choreography (design brief, confirmed): last-beat flare -> flatline sweep ->
+ * ember cooling (afterglow, never a hard cut) -> release (the last light drifts up) + tombstone.
+ * `p` is the 0..1 progress within the current beat; every curve is ease-out exponential family —
+ * no bounce, no elastic. Cools on the SAME blackbody scale the living palette uses.
+ */
+function drawDeathBeat(
+  ctx: Ctx2D,
+  phase: 'last-beat' | 'flatline' | 'ember-cooling' | 'release',
+  p: number,
+  pos: Point,
+  base: number,
+): void {
+  const TAU2 = Math.PI * 2;
+  if (phase === 'last-beat') {
+    // one final pulse, a touch too bright — the gasp as the ember collapses
+    const flare = Math.sin(p * Math.PI); // 0 -> 1 -> 0
+    const { r, g, b } = emberColor(0.18);
+    const radius = base * (0.9 + 1.1 * flare);
+    const grad = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, radius);
+    grad.addColorStop(0, `rgba(${r},${g},${b},${(0.35 + 0.65 * flare).toFixed(3)})`);
+    grad.addColorStop(1, `rgba(${r},${g},${b},0)`);
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, radius, 0, TAU2);
+    ctx.fill();
+    return;
+  }
+  if (phase === 'flatline') {
+    // the pulse stops: the light collapses into a thin horizontal trace sweeping outward
+    const { r, g, b } = emberColor(0.08);
+    const len = base * (1 + 3.5 * p);
+    ctx.strokeStyle = `rgba(${r},${g},${b},${(0.7 * (1 - 0.4 * p)).toFixed(3)})`;
+    ctx.lineWidth = Math.max(1, base * 0.09);
+    ctx.beginPath();
+    ctx.moveTo(pos.x - len, pos.y);
+    ctx.lineTo(pos.x + len, pos.y);
+    ctx.stroke();
+    return;
+  }
+  if (phase === 'ember-cooling') {
+    // afterglow: exponential decay of brightness AND temperature — the death with a soul
+    const cool = Math.exp(-3 * p); // 1 -> ~0.05
+    const { r, g, b } = emberColor(0.1 * cool);
+    const radius = base * (0.35 + 0.45 * cool);
+    const grad = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, radius);
+    grad.addColorStop(0, `rgba(${r},${g},${b},${(0.5 * cool + 0.05).toFixed(3)})`);
+    grad.addColorStop(1, `rgba(${r},${g},${b},0)`);
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, radius, 0, TAU2);
+    ctx.fill();
+    return;
+  }
+  // release: the last spark lets go — a faint drift upward while the tombstone fades in below
+  const { r, g, b } = emberColor(0.05);
+  const rise = base * 1.6 * p;
+  const sparkR = base * 0.22 * (1 - p);
+  if (sparkR > 0.3) {
+    const grad = ctx.createRadialGradient(pos.x, pos.y - rise, 0, pos.x, pos.y - rise, sparkR * 3);
+    grad.addColorStop(0, `rgba(${r},${g},${b},${(0.35 * (1 - p)).toFixed(3)})`);
+    grad.addColorStop(1, `rgba(${r},${g},${b},0)`);
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y - rise, sparkR * 3, 0, TAU2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = p; // the grave takes its place as the light leaves
+  drawTombstone(ctx, pos, base);
   ctx.globalAlpha = 1;
+}
+
+function drawTombstone(ctx: Ctx2D, p: Point, base: number): void {
   ctx.strokeStyle = 'rgba(90,80,74,0.5)'; // a dim warm-gray ring: the world remembers a death
   ctx.lineWidth = 2;
   ctx.beginPath();
@@ -138,20 +213,30 @@ function drawTombstone(ctx: Ctx2D, p: Point, base: number): void {
 
 export interface RenderConfig {
   baseRadius: number;
+  /** 0..1 multiplier on cosmetic motion (drift). 0 under prefers-reduced-motion. */
+  motionScale: number;
   light: LightConfig;
 }
 export const DEFAULT_RENDER_CONFIG: RenderConfig = {
   baseRadius: 14,
+  motionScale: 1,
   light: DEFAULT_LIGHT_CONFIG,
 };
 
-/** Draw the whole World for time `t` (seconds): clear the night, then one pulsing light per creature. */
+/**
+ * Draw the whole World for time `t` (seconds): clear the night, then one pulsing light per creature.
+ * `deaths` (optional) carries each creature's observed PhaseState so a LIVE death plays its 4-beat
+ * sequence; without it, states render as their stable phase (a past death is just a tombstone —
+ * the page never replays drama nobody watched). THE GAZE: while a death sequence is active, every
+ * other light dims and its breath stills — contrast walks the eye to the dying one.
+ */
 export function renderWorld(
   ctx: Ctx2D,
   snapshot: WorldCreature[],
   dims: { width: number; height: number },
   t: number,
   cfg: RenderConfig = DEFAULT_RENDER_CONFIG,
+  deaths?: ReadonlyMap<string, PhaseState>,
 ): void {
   ctx.globalAlpha = 1;
   // The night's depth (vignette) is STATIC, so it lives in the canvas CSS background (GPU-composited
@@ -159,14 +244,27 @@ export function renderWorld(
   // The canvas itself just clears to transparent each frame.
   ctx.clearRect(0, 0, dims.width, dims.height);
   const pts = layout(snapshot.map((c) => c.id), dims.width, dims.height);
-  const driftScale = 0.012 * Math.min(dims.width, dims.height);
+  const driftScale = 0.012 * Math.min(dims.width, dims.height) * cfg.motionScale;
+  const phases = snapshot.map((c) => {
+    const ps = deaths?.get(c.id) ?? bootstrap(c.state);
+    return { ps, phase: phaseAt(ps, t), progress: beatProgress(ps, t) };
+  });
+  const dim = worldDim(phases.map(({ ps }) => ({ ps, t })));
   snapshot.forEach((c, i) => {
-    const light = stateToLight(c, t, cfg.light);
+    const { phase, progress } = phases[i]!;
     ctx.save();
-    if (light.tombstone) {
+    if (phase === 'tombstone') {
       drawTombstone(ctx, pts[i]!, cfg.baseRadius); // the grave does not float
+    } else if (phase === 'glow' || phase === 'agony') {
+      const light = stateToLight(c, t, cfg.light);
+      const dimmed =
+        dim < 1
+          ? { ...light, brightness: light.brightness * dim, spark: light.spark * dim, halo: light.halo * dim }
+          : light;
+      drawLight(ctx, dimmed, drift(pts[i]!, c.id, t, driftScale * dim), c.id, t, cfg.baseRadius);
     } else {
-      drawLight(ctx, light, drift(pts[i]!, c.id, t, driftScale), c.id, t, cfg.baseRadius);
+      // a death in flight: the dying one is NEVER dimmed — it owns the frame
+      drawDeathBeat(ctx, phase, progress, pts[i]!, cfg.baseRadius);
     }
     ctx.restore();
   });

@@ -18,6 +18,8 @@ class Noop implements Ctx2D {
   stroke(): void {}
   fillRect(): void {}
   clearRect(): void {}
+  moveTo(): void {}
+  lineTo(): void {}
   createRadialGradient(): CanvasGradientLike {
     return { addColorStop(): void {} };
   }
