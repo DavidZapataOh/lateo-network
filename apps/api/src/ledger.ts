@@ -36,6 +36,12 @@ create table if not exists ledger_entries (
   created_at timestamptz not null default now()
 );
 create index if not exists ledger_creature_idx on ledger_entries(creature_id);
+-- Buyer class is CONVENIENCE ONLY (ops/demo). The traction metric NEVER reads it — the source of
+-- truth for "external" is on-chain provenance (ADR-0009 v2), not this label.
+create table if not exists buyers (
+  address text primary key,
+  class text not null check (class in ('agent','human','seed'))
+);
 `;
 
 export async function migrate(pool: pg.Pool): Promise<void> {
@@ -44,7 +50,20 @@ export async function migrate(pool: pg.Pool): Promise<void> {
 
 /** Tests only: empties the tables. */
 export async function resetDb(pool: pg.Pool): Promise<void> {
-  await pool.query('truncate ledger_entries, creatures restart identity cascade');
+  await pool.query('truncate ledger_entries, creatures, buyers restart identity cascade');
+}
+
+/** Convenience label (ops/demo only). The traction metric ignores it — provenance is the truth. */
+export async function setBuyerClass(
+  pool: Queryable,
+  address: string,
+  buyerClass: 'agent' | 'human' | 'seed',
+): Promise<void> {
+  await pool.query(
+    `insert into buyers(address, class) values ($1,$2)
+     on conflict (address) do update set class = excluded.class`,
+    [address.toLowerCase(), buyerClass],
+  );
 }
 
 export async function createCreature(
