@@ -44,24 +44,24 @@ export async function onchainFunding(
   });
   const pub = createPublicClient({ chain: arc, transport: http(opts.rpcUrl) });
   const fromBlock = opts.fromBlock ?? 0n;
+  const head = await pub.getBlockNumber();
+  const transferEvent = parseAbiItem('event Transfer(address indexed from, address indexed to, uint256 value)');
   const events: FundingEvent[] = [];
+  // Arc's RPC caps eth_getLogs at a 100000-block range, so scan in windows (contiguous, no overlap).
+  const STEP = 90_000n;
   for (const raw of treasuries) {
     const T = getAddress(raw);
-    const transfers = await pub.getLogs({
-      address: USDC as Hex,
-      event: parseAbiItem('event Transfer(address indexed from, address indexed to, uint256 value)'),
-      args: { from: T },
-      fromBlock,
-    });
-    for (const l of transfers) if (l.args.to) events.push({ from: T, to: l.args.to });
-    // Raw eth_getLogs for the Gateway deposit (event name unknown -> filter by raw topic).
-    const deposits = (await pub.request({
-      method: 'eth_getLogs',
-      params: [
-        { address: GATEWAY_WALLET, topics: [DEPOSIT_TOPIC, null, null, topicAddr(T)], fromBlock: toHex(fromBlock), toBlock: 'latest' },
-      ],
-    })) as Array<{ topics: Hex[] }>;
-    for (const l of deposits) if (l.topics[2]) events.push({ from: T, to: fromTopicAddr(l.topics[2]) });
+    for (let start = fromBlock; start <= head; start += STEP + 1n) {
+      const end = start + STEP < head ? start + STEP : head;
+      const transfers = await pub.getLogs({ address: USDC as Hex, event: transferEvent, args: { from: T }, fromBlock: start, toBlock: end });
+      for (const l of transfers) if (l.args.to) events.push({ from: T, to: l.args.to });
+      // Raw eth_getLogs for the Gateway deposit (event name unknown -> filter by raw topic).
+      const deposits = (await pub.request({
+        method: 'eth_getLogs',
+        params: [{ address: GATEWAY_WALLET, topics: [DEPOSIT_TOPIC, null, null, topicAddr(T)], fromBlock: toHex(start), toBlock: toHex(end) }],
+      })) as Array<{ topics: Hex[] }>;
+      for (const l of deposits) if (l.topics[2]) events.push({ from: T, to: fromTopicAddr(l.topics[2]) });
+    }
   }
   return events;
 }
