@@ -14,11 +14,13 @@
     "@anthropic-ai/sdk": "^0.110.0",
     "@circle-fin/developer-controlled-wallets": "^10.8.0",
     "@circle-fin/x402-batching": "^2.0.4",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@openzeppelin/merkle-tree": "^1.0.8",
     "@x402/core": "2.6.0",
     "@x402/evm": "2.6.0",
     "pg": "^8.13.1",
-    "viem": "^2.54.1"
+    "viem": "^2.54.1",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/pg": "^8.11.10",
