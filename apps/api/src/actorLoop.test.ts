@@ -130,3 +130,24 @@ describe('option B — starvation is REAL: a broke creature cannot buy its next 
     expect(budget.spentInWindow(200)).toBe(2);
   });
 });
+
+describe('availability — a transient rail failure never crashes the world (days-long run)', () => {
+  it('a materialize failure is caught: the pulse survives, the burn is retained, the loop goes on', async () => {
+    const id = await createCreature(pool, { walletAddress: '0xF1', serviceType: 'url-to-json' });
+    await postCredit(pool, { creatureId: id, kind: 'income', amount: 100_000n }); // alive
+    const failing = {
+      calls: 0,
+      async materialize(): Promise<{ settleId: string }> {
+        this.calls++;
+        throw new Error('Connect Timeout Error gateway-api-testnet.circle.com'); // the real crash
+      },
+    };
+    const actor = makeActor(id, { ratePerTick: 1000n, nTicks: 1, thoughtCost: 0n }, failing);
+    await actor.pulse(); // accrues, materialize is due, rail throws — MUST NOT propagate
+    await actor.pulse();
+    expect(failing.calls).toBeGreaterThanOrEqual(2); // it kept trying
+    expect(actor.pulseErrors).toBeGreaterThanOrEqual(2); // caught, counted, alive
+    // the creature is untouched: still alive, balance intact (the failed burn never left the ledger)
+    expect((await readLifeState(pool, id)).state).not.toBe('dead');
+  });
+});

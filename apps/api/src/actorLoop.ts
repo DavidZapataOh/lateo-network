@@ -114,17 +114,31 @@ export class CreatureActor {
     return { settled: b.settled, pending: b.pending, burnRatePerSec: this.deps.burnRatePerSec };
   }
 
-  /** One pulse: accrue, advance the life-cycle by runway, signal threshold, materialize burn, drain. */
+  /** Count of pulses that hit a transient error (rail/RPC/LLM blip) — observability for the seeding. */
+  pulseErrors = 0;
+
+  /**
+   * One pulse: accrue, advance the life-cycle by runway, signal threshold, materialize burn, drain.
+   * FULLY GUARDED: this runs in a setInterval, so ANY throw (a Circle/RPC timeout, an LLM error at
+   * the spend cap) would otherwise become an unhandled rejection and crash the whole world. A bad
+   * tick is logged and skipped — the loop survives; accrued burn is retained and retries next
+   * cadence; the creature is unharmed. Availability over a days-long unattended run depends on this.
+   */
   async pulse(): Promise<void> {
-    this.metabolism.tick();
-    const now = this.now();
-    const proj = await this.projection();
-    const runway = runwayOf({ ...proj, accumulated: this.metabolism.accumulatedBurn });
-    await transitionCreature(this.deps.pool, { creatureId: this.deps.creatureId, runway, grace: this.deps.grace, now });
-    this.metabolism.signalThreshold(proj, () => this.queue.push({ trigger: 'threshold', now }));
-    const r = await this.metabolism.materializeIfDue();
-    if (r) this.burnSettleIds.push(r.settleId);
-    await this.drain();
+    try {
+      this.metabolism.tick();
+      const now = this.now();
+      const proj = await this.projection();
+      const runway = runwayOf({ ...proj, accumulated: this.metabolism.accumulatedBurn });
+      await transitionCreature(this.deps.pool, { creatureId: this.deps.creatureId, runway, grace: this.deps.grace, now });
+      this.metabolism.signalThreshold(proj, () => this.queue.push({ trigger: 'threshold', now }));
+      const r = await this.metabolism.materializeIfDue();
+      if (r) this.burnSettleIds.push(r.settleId);
+      await this.drain();
+    } catch (e) {
+      this.pulseErrors++;
+      console.error(`[actor ${this.deps.creatureId.slice(0, 8)}] pulse error (kept alive):`, String(e).slice(0, 160));
+    }
   }
 
   /** Process queued events: the brain scheduler (anti-spiral) gates firing; the dead never think. */

@@ -1,5 +1,16 @@
 import { makePool } from './db.js';
 import { migrate } from './ledger.js';
+
+// BACKSTOP for the days-long unattended seeding run: no single transient failure (a Circle/RPC
+// blip, an LLM error at the spend cap) may take the whole world down. Every hot path is already
+// guarded (pulse try/catch, void-on-failure, .catch on background jobs); these are the last line —
+// log loudly, stay up. A degraded-but-alive world beats a crash-loop in front of real visitors.
+process.on('unhandledRejection', (reason) => {
+  console.error('[lateo] UNHANDLED REJECTION (kept alive):', String(reason).slice(0, 300));
+});
+process.on('uncaughtException', (err) => {
+  console.error('[lateo] UNCAUGHT EXCEPTION (kept alive):', String(err).slice(0, 300));
+});
 import { createServer, type ServerOptions } from './server.js';
 import { fundedByTreasury, onchainFunding } from './provenance.js';
 import { circleClient, createCreatureWallet, seedFromTreasury, gatewayAvailable } from './rail.js';

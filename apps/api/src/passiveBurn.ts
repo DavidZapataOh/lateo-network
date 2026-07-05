@@ -2,10 +2,10 @@ import type pg from 'pg';
 import { randomUUID } from 'node:crypto';
 import type { Atomic } from './money.js';
 import type { PassiveBurnRail } from './metabolism.js';
-import { authorizeBurn, settleAuthorization } from './ledger.js';
-import { signAuthorization, settle } from './rail.js';
+import { authorizeBurn, settleAuthorization, voidAuthorization } from './ledger.js';
+import { signAuthorization as realSign, settle as realSettle } from './rail.js';
 
-type Circle = Parameters<typeof signAuthorization>[0];
+type Circle = Parameters<typeof realSign>[0];
 
 /**
  * The REAL passive-burn rail (slice 2.2, task 3): materializes accumulated passive burn as ONE
@@ -21,7 +21,12 @@ export function createPassiveBurnRail(deps: {
   walletId: string;
   address: `0x${string}`;
   horno: string;
+  // Injectable for tests; default to the real rail. Lets us prove void-on-failure without a network.
+  signAuthorization?: typeof realSign;
+  settle?: typeof realSettle;
 }): PassiveBurnRail {
+  const sign = deps.signAuthorization ?? realSign;
+  const settle = deps.settle ?? realSettle;
   return {
     async materialize(amount: Atomic): Promise<{ settleId: string }> {
       const auth = await authorizeBurn(deps.pool, {
@@ -31,16 +36,24 @@ export function createPassiveBurnRail(deps: {
         nonce: randomUUID(),
       });
       if (!auth.ok) throw new Error('passive burn authorize failed: ' + (auth.reason ?? 'unknown'));
-      const signed = await signAuthorization(deps.circle, {
-        walletId: deps.walletId,
-        address: deps.address,
-        payTo: deps.horno,
-        amount,
-      });
-      const s = await settle(signed);
-      if (!s.success) throw new Error('passive burn settle failed: ' + (s.errorReason ?? 'unknown'));
-      await settleAuthorization(deps.pool, auth.id!, s.transaction);
-      return { settleId: s.transaction };
+      // ATOMIC: from here the auth is `pending`. Either it fully settles, or we VOID it — never a
+      // dangling pending (a Circle timeout mid-burn would otherwise pile up phantom pending that
+      // falsely depresses live/runway). INV-4: the auth is settled xor voided, exactly once.
+      try {
+        const signed = await sign(deps.circle, {
+          walletId: deps.walletId,
+          address: deps.address,
+          payTo: deps.horno,
+          amount,
+        });
+        const s = await settle(signed);
+        if (!s.success) throw new Error('passive burn settle failed: ' + (s.errorReason ?? 'unknown'));
+        await settleAuthorization(deps.pool, auth.id!, s.transaction);
+        return { settleId: s.transaction };
+      } catch (e) {
+        await voidAuthorization(deps.pool, auth.id!).catch(() => undefined); // best-effort unwind
+        throw e; // the accrued burn stays in the metabolism and retries next cadence (nothing lost)
+      }
     },
   };
 }
