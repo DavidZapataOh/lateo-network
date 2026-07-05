@@ -74,9 +74,6 @@ const cfg = {
   light: { ...DEFAULT_LIGHT_CONFIG, fullRunwaySeconds: 600 },
   baseRadius: 22,
   motionScale: reducedMotion ? 0 : 1, // cosmetic drift is motion; the palette/dim are not
-  // ART-DIRECTION TRIAL (?bodies=1): pixel-art creature bodies + ember aura. Default stays glows
-  // until the concept passes David's human-eye review.
-  bodies: new URLSearchParams(window.location.search).get('bodies') === '1',
 };
 
 function frame(): void {

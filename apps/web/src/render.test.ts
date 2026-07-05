@@ -100,7 +100,7 @@ describe('3.1 T5 — Canvas render (dumb consumer of stateToLight)', () => {
     expect(layout(ids, DIMS.width, DIMS.height)).toEqual(layout(ids, DIMS.width, DIMS.height));
   });
 
-  it('a dead creature is a tombstone (stroke), NOT a glow (no gradient)', () => {
+  it('a dead creature is a cold ASH MOUND (body rects), never an aura', () => {
     const ctx = new Rec();
     const snap: WorldCreature[] = [
       alive('a'),
@@ -108,8 +108,9 @@ describe('3.1 T5 — Canvas render (dumb consumer of stateToLight)', () => {
       { id: 'g', state: 'agonizing', runwaySeconds: 2, lastActivityAt: null },
     ];
     renderWorld(ctx, snap, DIMS, 0);
-    expect(glows(ctx).length).toBe(2); // alive + agonizing glow; the dead one does not
-    expect(ctx.strokes).toBe(1); // the tombstone ring
+    expect(glows(ctx).length).toBe(2); // alive + agonizing auras; the dead one has NO warmth left
+    expect(ctx.fillRects).toBeGreaterThan(0); // bodies + the ash mound are painted pixels
+    expect(ctx.strokes).toBe(0); // the ring is retired — the grave is the being itself
   });
 
   it('deterministic: same (snapshot, t) => identical draw', () => {
@@ -148,26 +149,31 @@ describe('3.2 — a LIVE death plays the 4-beat sequence; the world holds its br
   /** A death OBSERVED live at t=100 (agony first, then the real dead delta). */
   const liveDeath = (): PhaseState => observe(observe(bootstrap('alive'), 'agonizing', 90), 'dead', 100);
 
-  it('bootstrap dead (page load) = tombstone immediately — past deaths are never replayed', () => {
+  it('bootstrap dead (page load) = cold ash immediately — past deaths are never replayed', () => {
     const ctx = new Rec();
     renderWorld(ctx, [dead('d')], DIMS, 100.2); // no deaths map: bootstrap path
-    expect(ctx.strokes).toBe(1); // tombstone ring, not a flare
-    expect(glows(ctx).length).toBe(0);
+    expect(glows(ctx).length).toBe(0); // no flare, no residual heat — just the mound
+    expect(ctx.fillRects).toBeGreaterThan(0); // the ash body is there
   });
 
-  it('beats render distinctly: flare glow -> flatline LINE -> cooling glow -> tombstone', () => {
+  it('beats render distinctly: gasp (aura+body) -> sinking body + LINE -> cooling ash -> cold ash', () => {
     const deaths = new Map([['d', liveDeath()]]);
     const at = (t: number): Rec => {
       const ctx = new Rec();
       renderWorld(ctx, [dead('d')], DIMS, t, undefined, deaths);
       return ctx;
     };
-    expect(glows(at(100.2)).length).toBe(1); // last-beat: a radial flare
-    const flat = at(100.6); // flatline: a stroked line, no glow
+    const gasp = at(100.2); // last-beat: the aura flares AND the agonized body is painted
+    expect(glows(gasp).length).toBe(1);
+    expect(gasp.fillRects).toBeGreaterThan(0);
+    const flat = at(100.6); // flatline: the body sinks (fewer rows painted) + the flat trace
     expect(flat.lines).toBe(1);
-    expect(glows(flat).length).toBe(0);
-    expect(glows(at(101.2)).length).toBe(1); // ember-cooling: a shrinking glow
-    expect(at(102.5).strokes).toBe(1); // after the sequence: the grave remains
+    expect(glows(flat).length).toBe(0); // the aura is gone — the pulse stopped
+    expect(flat.fillRects).toBeLessThan(gasp.fillRects); // rows swallowed by the ground
+    expect(glows(at(101.2)).length).toBe(1); // ember-cooling: the mound still radiates heat
+    const after = at(102.5); // after the sequence: only the cold ash remains
+    expect(glows(after).length).toBe(0);
+    expect(after.fillRects).toBeGreaterThan(0);
   });
 
   it('THE GAZE: while one dies, the OTHER living light dims (contrast walks the eye)', () => {
