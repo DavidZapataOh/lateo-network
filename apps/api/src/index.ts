@@ -16,16 +16,20 @@ const funded = new Set<string>();
 function actionsFromEnv(): ServerOptions['actions'] {
   if (!process.env.CIRCLE_API_KEY || !process.env.TREASURY_PRIVATE_KEY) return undefined;
   const circle = circleClient();
-  let walletSetId = process.env.CIRCLE_WALLET_SET_ID;
+  // Single-flight wallet-set init: N concurrent spawns must share ONE set (the 5-concurrent derisk
+  // caught the check-then-act race creating one set per spawn).
+  let walletSetIdP: Promise<string> | undefined = process.env.CIRCLE_WALLET_SET_ID
+    ? Promise.resolve(process.env.CIRCLE_WALLET_SET_ID)
+    : undefined;
   return {
     rail: {
       async provisionWallet(): Promise<{ walletId: string; address: `0x${string}` }> {
-        if (!walletSetId) {
-          const ws = await circle.createWalletSet({ name: 'lateo-world' });
-          walletSetId = ws.data!.walletSet!.id;
-          console.log(`[lateo] created wallet set ${walletSetId} (set CIRCLE_WALLET_SET_ID to reuse)`);
-        }
-        return createCreatureWallet(circle, walletSetId);
+        walletSetIdP ??= circle.createWalletSet({ name: 'lateo-world' }).then((ws) => {
+          const id = ws.data!.walletSet!.id;
+          console.log(`[lateo] created wallet set ${id} (set CIRCLE_WALLET_SET_ID to reuse)`);
+          return id;
+        });
+        return createCreatureWallet(circle, await walletSetIdP);
       },
       seed: async (address, amountUsdc): Promise<void> => {
         await seedFromTreasury(amountUsdc, address);

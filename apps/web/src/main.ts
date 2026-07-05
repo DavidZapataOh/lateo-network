@@ -131,11 +131,18 @@ void refreshStats();
 setInterval(() => void refreshStats(), 5000);
 
 const panelEl = document.getElementById('panel')!;
+let openCreatureId: string | null = null;
 function closePanel(): void {
+  openCreatureId = null;
   panelEl.classList.remove('open');
   if (window.location.hash) history.replaceState(null, '', ' ');
 }
+// live panel: refresh while open so the viewer SEES hatching turn into balance (the light-up moment)
+setInterval(() => {
+  if (openCreatureId) void openPanel(openCreatureId);
+}, 5000);
 async function openPanel(id: string): Promise<void> {
+  openCreatureId = id;
   const res = await fetch(`/c/${id}/panel`);
   if (!res.ok) return;
   const p = (await res.json()) as PanelDto;
@@ -156,6 +163,14 @@ async function openPanel(id: string): Promise<void> {
         `<td class="muted">${e.settleId ? esc(e.settleId.slice(0, 8)) : ''}</td></tr>`,
     )
     .join('');
+  // THE cold-open lifeline: a newborn has no balance yet — without this line, the ~2min dark body
+  // reads as "broken" and a stranger closes the tab before seeing it light up.
+  const hatching =
+    p.state === 'alive' && p.balances.settledAtomic === '0'
+      ? `<div style="margin-top:10px;padding:8px 10px;border:1px solid #3a2e24;border-radius:5px">` +
+        `<span class="ok">☉ hatching</span> — your creature is being born. It lights up when its ` +
+        `first on-chain balance lands (<b>~2 min</b>, real money settling on Arc). Leave this open.</div>`
+      : '';
   const actions =
     p.state === 'dead'
       ? `<div class="muted" style="margin-top:10px">death is permanent — no actions remain</div>`
@@ -174,6 +189,7 @@ async function openPanel(id: string): Promise<void> {
     `<tr><td>live = settled − pending</td><td><b>${usdc(p.balances.liveAtomic)}</b> USDC</td></tr>` +
     `</table>` +
     `<div style="margin-top:8px">${rec}</div>` +
+    hatching +
     actions +
     `<div style="margin-top:12px" class="muted">ledger (latest first)</div>` +
     `<table>${entries}</table>`;

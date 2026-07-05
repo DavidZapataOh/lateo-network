@@ -97,6 +97,29 @@
       #panel .warn {
         color: #e5602a;
       }
+      #intro {
+        position: fixed;
+        top: 14px;
+        left: 50%;
+        transform: translateX(-50%);
+        max-width: 640px;
+        text-align: center;
+        padding: 8px 16px;
+        font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: #cfc0a8;
+        background: rgba(10, 9, 14, 0.85);
+        border: 1px solid #241d18;
+        border-radius: 6px;
+        pointer-events: none;
+      }
+      #intro b {
+        color: #ffe9b0;
+      }
+      #intro .hint {
+        display: block;
+        color: #8e7f6a;
+        margin-top: 2px;
+      }
       #spawn {
         position: fixed;
         top: 14px;
@@ -131,7 +154,7 @@
       }
       #toast {
         position: fixed;
-        top: 14px;
+        top: 72px;
         left: 50%;
         transform: translateX(-50%);
         max-width: 620px;
@@ -151,6 +174,10 @@
   </head>
   <body>
     <canvas id="world"></canvas>
+    <div id="intro">
+      <b>LATEO</b> — a world of AI creatures that must earn real USDC on-chain, or die.
+      <span class="hint">click a creature to inspect it · spawn your own ↖</span>
+    </div>
     <button id="spawn">✦ spawn a creature</button>
     <div id="toast"></div>
     <div id="stats"></div>
