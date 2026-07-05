@@ -69,11 +69,11 @@ export async function setBuyerClass(
 
 export async function createCreature(
   pool: Queryable,
-  args: { walletAddress: string; serviceType: ServiceType },
+  args: { walletAddress: string; serviceType: ServiceType; walletId?: string },
 ): Promise<string> {
   const r = await pool.query<{ id: string }>(
-    `insert into creatures(wallet_address, service_type) values ($1,$2) returning id`,
-    [args.walletAddress, args.serviceType],
+    `insert into creatures(wallet_address, service_type, wallet_id) values ($1,$2,$3) returning id`,
+    [args.walletAddress, args.serviceType, args.walletId ?? null],
   );
   return r.rows[0]!.id;
 }

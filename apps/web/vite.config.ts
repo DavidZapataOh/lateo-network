@@ -10,6 +10,7 @@ export default defineConfig({
       '/world': { target: API, changeOrigin: true },
       '/creatures': { target: API, changeOrigin: true },
       '/c': { target: API, changeOrigin: true },
+      '/spawn': { target: API, changeOrigin: true },
     },
   },
 });

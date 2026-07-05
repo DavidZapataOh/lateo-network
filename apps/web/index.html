@@ -97,10 +97,62 @@
       #panel .warn {
         color: #e5602a;
       }
+      #spawn {
+        position: fixed;
+        top: 14px;
+        left: 14px;
+        padding: 8px 14px;
+        font: 13px ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: #ffe9b0;
+        background: rgba(20, 16, 14, 0.9);
+        border: 1px solid #3a2e24;
+        border-radius: 6px;
+        cursor: pointer;
+      }
+      #spawn:hover {
+        border-color: #f2a63b;
+      }
+      #spawn:disabled {
+        opacity: 0.5;
+        cursor: wait;
+      }
+      #panel button.action {
+        margin: 10px 8px 0 0;
+        padding: 6px 12px;
+        font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: #ffe9b0;
+        background: rgba(36, 29, 24, 0.9);
+        border: 1px solid #3a2e24;
+        border-radius: 5px;
+        cursor: pointer;
+      }
+      #panel button.action:hover {
+        border-color: #f2a63b;
+      }
+      #toast {
+        position: fixed;
+        top: 14px;
+        left: 50%;
+        transform: translateX(-50%);
+        max-width: 620px;
+        padding: 8px 14px;
+        font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: #cfc0a8;
+        background: rgba(10, 9, 14, 0.95);
+        border: 1px solid #3a2e24;
+        border-radius: 6px;
+        display: none;
+        word-break: break-all;
+      }
+      #toast a {
+        color: #f2a63b;
+      }
     </style>
   </head>
   <body>
     <canvas id="world"></canvas>
+    <button id="spawn">✦ spawn a creature</button>
+    <div id="toast"></div>
     <div id="stats"></div>
     <aside id="panel"></aside>
     <script type="module" src="/src/main.ts"></script>

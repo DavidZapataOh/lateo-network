@@ -4,6 +4,7 @@ import type pg from 'pg';
 import type Anthropic from '@anthropic-ai/sdk';
 import { listCreatures, getWorldSnapshot } from './readmodel.js';
 import { creaturePanel, worldStats } from './panel.js';
+import { spawnCreature, feedFromTreasury, type SpawnRail } from './spawn.js';
 import { QuoteStore, isMenuService } from './quote.js';
 import { requirementsFor, verify, type SignedAuthorization } from './rail.js';
 import type { DemandEvent } from './demand.js';
@@ -28,6 +29,15 @@ export interface ServerOptions {
   fundedByTreasury?: Set<string>;
   /** Explorer base for wallet links (defaults to Arc testnet's Arcscan). */
   arcscanBase?: string;
+  /** The transactional actions' rail (spawn/feed). Absent -> actions respond 503 (read-only mode). */
+  actions?: {
+    rail: SpawnRail;
+    seedUsdc: string;
+    seedAtomic: Atomic;
+    feedUsdc: string;
+    feedAtomic: Atomic;
+    graceSeconds: number;
+  };
 }
 
 /**
@@ -90,6 +100,61 @@ async function handle(
     const p = await creaturePanel(pool, panelMatch[1]!, { arcscanBase: opts.arcscanBase });
     if (!p) send(res, 404, { error: 'not_found' });
     else send(res, 200, p);
+    return;
+  }
+  // ---- the 3 ACTIONS (transactional API, ADR-0010 — never through the read-model) ----
+  if (req.method === 'POST' && url === '/spawn') {
+    if (!opts.actions) {
+      send(res, 503, { error: 'actions_disabled', note: 'spawn rail not configured' });
+      return;
+    }
+    const body = await readJsonBody(req);
+    const serviceType = body.serviceType === 'summary-with-citations' ? 'summary-with-citations' : 'url-to-json';
+    const s = await spawnCreature(pool, opts.actions.rail, {
+      serviceType,
+      seedUsdc: opts.actions.seedUsdc,
+      seedAtomic: opts.actions.seedAtomic,
+    });
+    // respond IMMEDIATELY (latency resilience): the seed settles in background via balance polling
+    send(res, 201, {
+      id: s.id,
+      walletAddress: s.walletAddress,
+      arcscanUrl: `${opts.arcscanBase ?? 'https://testnet.arcscan.app'}/address/${s.walletAddress}`,
+      seed: { amountUsdc: opts.actions.seedUsdc, status: 'settling', note: 'credits when the chain confirms' },
+    });
+    return;
+  }
+  const feedMatch = /^\/c\/([^/?]+)\/feed$/.exec(url);
+  if (feedMatch) {
+    if (req.method !== 'POST') {
+      send(res, 405, { error: 'method_not_allowed' });
+      return;
+    }
+    if (!opts.actions) {
+      send(res, 503, { error: 'actions_disabled' });
+      return;
+    }
+    // Async by design (batch lag can be minutes): 202 now; the credit + possible REVIVE land when
+    // the chain confirms. Feeding the dead is rejected here, before any value moves.
+    const cur = await pool.query<{ state: string }>(`select state from creatures where id = $1`, [feedMatch[1]!]);
+    if (!cur.rows[0]) {
+      send(res, 404, { error: 'not_found' });
+      return;
+    }
+    if (cur.rows[0].state === 'dead') {
+      send(res, 410, { error: 'gone', note: 'death is permanent — the dead cannot be fed' });
+      return;
+    }
+    const a = opts.actions;
+    void feedFromTreasury(pool, a.rail, {
+      creatureId: feedMatch[1]!,
+      amountUsdc: a.feedUsdc,
+      amountAtomic: a.feedAtomic,
+      burnRatePerSec: opts.world?.burnRatePerSec ?? 0n,
+      grace: a.graceSeconds,
+      now: Math.floor(Date.now() / 1000),
+    }).catch(() => undefined);
+    send(res, 202, { accepted: true, amountUsdc: a.feedUsdc, status: 'settling' });
     return;
   }
   const service = /^\/c\/([^/?]+)/.exec(url);

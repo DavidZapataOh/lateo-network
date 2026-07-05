@@ -153,6 +153,13 @@ async function openPanel(id: string): Promise<void> {
         `<td class="muted">${e.settleId ? esc(e.settleId.slice(0, 8)) : ''}</td></tr>`,
     )
     .join('');
+  const actions =
+    p.state === 'dead'
+      ? `<div class="muted" style="margin-top:10px">death is permanent — no actions remain</div>`
+      : `<div>` +
+        `<button class="action" data-action="feed" data-creature="${esc(p.id)}">feed 0.02 USDC</button>` +
+        `<button class="action" data-action="buy" data-creature="${esc(p.id)}">buy service (x402)</button>` +
+        `</div>`;
   panelEl.innerHTML =
     `<button class="close" aria-label="close">×</button>` +
     `<h2>creature ${esc(p.id.slice(0, 8))}</h2>` +
@@ -164,6 +171,7 @@ async function openPanel(id: string): Promise<void> {
     `<tr><td>live = settled − pending</td><td><b>${usdc(p.balances.liveAtomic)}</b> USDC</td></tr>` +
     `</table>` +
     `<div style="margin-top:8px">${rec}</div>` +
+    actions +
     `<div style="margin-top:12px" class="muted">ledger (latest first)</div>` +
     `<table>${entries}</table>`;
   panelEl.classList.add('open');
@@ -194,3 +202,78 @@ canvas.addEventListener('click', (ev) => {
 // deep link: /#c=<id> opens the panel directly (also how evidence captures target a creature)
 const hashId = /^#c=(.+)$/.exec(window.location.hash)?.[1];
 if (hashId) void openPanel(hashId);
+
+// ---- the 3 ACTIONS (they hit the TRANSACTIONAL API — the read-model above never mutates) -------
+const toastEl = document.getElementById('toast')!;
+let toastTimer: ReturnType<typeof setTimeout> | undefined;
+function toast(html: string, ms = 12000): void {
+  toastEl.innerHTML = html;
+  toastEl.style.display = 'block';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (toastEl.style.display = 'none'), ms);
+}
+
+// CREATE — the judge's flow: spawn your own creature; it is born dark with a REAL Circle wallet
+// and lights up when its treasury seed lands on-chain (latency-resilient by design).
+const spawnBtn = document.getElementById('spawn') as HTMLButtonElement;
+spawnBtn.addEventListener('click', () => {
+  void (async () => {
+    spawnBtn.disabled = true;
+    spawnBtn.textContent = '✦ provisioning wallet…';
+    try {
+      const res = await fetch('/spawn', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ serviceType: 'url-to-json' }),
+      });
+      const s = (await res.json()) as { id?: string; walletAddress?: string; arcscanUrl?: string; error?: string };
+      if (!res.ok || !s.id) {
+        toast(`spawn failed: ${esc(s.error ?? String(res.status))}`);
+        return;
+      }
+      toast(
+        `born: <b>creature ${esc(s.id.slice(0, 8))}</b> · real wallet ` +
+          `<a href="${esc(s.arcscanUrl ?? '#')}" target="_blank" rel="noreferrer">${esc(s.walletAddress ?? '')}</a>` +
+          `<br>seed settling on-chain — it lights up when the money lands`,
+        20000,
+      );
+      history.replaceState(null, '', `#c=${s.id}`);
+      void openPanel(s.id);
+    } finally {
+      spawnBtn.disabled = false;
+      spawnBtn.textContent = '✦ spawn a creature';
+    }
+  })();
+});
+
+// FEED + BUY live inside the panel — wired via event delegation on data-action buttons.
+panelEl.addEventListener('click', (ev) => {
+  const btn = (ev.target as HTMLElement).closest('button.action') as HTMLButtonElement | null;
+  if (!btn) return;
+  const id = btn.dataset.creature!;
+  if (btn.dataset.action === 'feed') {
+    void (async () => {
+      const res = await fetch(`/c/${id}/feed`, { method: 'POST' });
+      const r = (await res.json()) as { accepted?: boolean; amountUsdc?: string; error?: string; note?: string };
+      if (res.status === 410) toast(`the dead cannot be fed — death is permanent`);
+      else if (r.accepted) toast(`feeding ${esc(r.amountUsdc ?? '')} USDC — credits when the chain confirms (revives if agonizing)`);
+      else toast(`feed failed: ${esc(r.error ?? 'unknown')}`);
+    })();
+  }
+  if (btn.dataset.action === 'buy') {
+    void (async () => {
+      // show the REAL x402 quote (this is the agents' door — the MCP buy tool pays it end to end)
+      const res = await fetch(`/c/${id}`, { method: 'POST' });
+      const q = (await res.json()) as { price?: string; nonce?: string; error?: string; state?: string };
+      if (res.status === 402 && q.price) {
+        toast(
+          `x402 quote — price <b>${usdc(q.price)} USDC</b> · nonce <span class="muted">${esc(q.nonce ?? '')}</span>` +
+            `<br>agents pay this via the LATEO MCP <b>buy</b> tool (x402 sign → verify → settle)`,
+          16000,
+        );
+      } else {
+        toast(`no quote: ${esc(q.error ?? String(res.status))} (${esc(q.state ?? '')})`);
+      }
+    })();
+  }
+});
