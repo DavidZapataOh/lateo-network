@@ -63,6 +63,7 @@ const server = createServer(pool, {
   world: { burnRatePerSec: burnRate },
   fundedByTreasury: funded,
   actions: actionsFromEnv(),
+  webDist: process.env.WEB_DIST, // production: serve the built world page from this same service
   onDemand: (ev) => {
     if (ev.kind === 'sale') worldActors?.onSale(ev.creatureId); // a real sale wakes the seller's brain
   },

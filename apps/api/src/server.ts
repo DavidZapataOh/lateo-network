@@ -29,6 +29,8 @@ export interface ServerOptions {
   fundedByTreasury?: Set<string>;
   /** Explorer base for wallet links (defaults to Arc testnet's Arcscan). */
   arcscanBase?: string;
+  /** Serve the built world page from this directory (production: one service, one stable URL). */
+  webDist?: string;
   /** The transactional actions' rail (spawn/feed). Absent -> actions respond 503 (read-only mode). */
   actions?: {
     rail: SpawnRail;
@@ -179,7 +181,37 @@ async function handle(
     await handleService(req, res, pool, quotes, opts, service[1]!);
     return;
   }
+  // Production static hosting (WEB_DIST=apps/web/dist): one Railway service serves world + API on
+  // one stable URL. Read-only file serving; API routes above always win.
+  if (req.method === 'GET' && opts.webDist && (await serveStatic(res, opts.webDist, url))) return;
   send(res, 404, { error: 'not_found' });
+}
+
+const MIME: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript',
+  '.css': 'text/css',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.ico': 'image/x-icon',
+  '.map': 'application/json',
+};
+
+async function serveStatic(res: http.ServerResponse, dist: string, url: string): Promise<boolean> {
+  const { readFile } = await import('node:fs/promises');
+  const path = await import('node:path');
+  const clean = url.split('?')[0]!.split('#')[0]!;
+  const rel = clean === '/' ? 'index.html' : clean.slice(1);
+  const full = path.resolve(dist, rel);
+  if (!full.startsWith(path.resolve(dist))) return false; // no path traversal
+  try {
+    const body = await readFile(full);
+    res.writeHead(200, { 'content-type': MIME[path.extname(full)] ?? 'application/octet-stream' });
+    res.end(body);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 interface CreatureRow {
