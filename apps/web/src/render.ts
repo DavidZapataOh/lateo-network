@@ -11,6 +11,7 @@ import {
   type LightConfig,
 } from './stateToLight.js';
 import { phaseAt, beatProgress, worldDim, bootstrap, type PhaseState } from './deathPhase.js';
+import { bodyGrid, flameSpans, spritePalette, toRuns, type SpriteState, type RunSpan } from './sprite.js';
 
 export interface WorldCreature {
   id: string;
@@ -93,7 +94,7 @@ export function layout(ids: string[], w: number, h: number): Point[] {
   const intimacy = Math.min(1, Math.max(0.72, Math.sqrt(n / 40)));
   const rx = 0.4 * w;
   const ry = 0.4 * h;
-  return ids.map((id, i) => {
+  const pts = ids.map((id, i) => {
     const jr = hash01(id, 1);
     const ja = hash01(id, 2);
     const rNorm = intimacy * Math.sqrt((i + 0.6) / n) * (0.8 + 0.4 * jr); // jittered, max 1.2*intimacy
@@ -103,6 +104,28 @@ export function layout(ids: string[], w: number, h: number): Point[] {
       y: cy + rNorm * Math.sin(a) * ry * 0.9,
     };
   });
+  // Deterministic separation: bodies must never overlap (a stacked pair reads as a rendering bug,
+  // where overlapping glows just blended). A few relaxation passes push the closest pairs apart.
+  const minSep = 0.18 * Math.min(w, h) * intimacy * Math.sqrt(8 / Math.max(n, 8)); // > body height + drift margin
+  for (let pass = 0; pass < 4; pass++) {
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const dx = pts[j]!.x - pts[i]!.x;
+        const dy = pts[j]!.y - pts[i]!.y;
+        const d = Math.hypot(dx, dy) || 0.001;
+        if (d < minSep) {
+          const push = (minSep - d) / 2;
+          const ux = dx / d;
+          const uy = dy / d;
+          pts[i]!.x -= ux * push;
+          pts[i]!.y -= uy * push;
+          pts[j]!.x += ux * push;
+          pts[j]!.y += uy * push;
+        }
+      }
+    }
+  }
+  return pts;
 }
 
 /** Slow deterministic float around a base point (~1% of the field, ~9-14s periods, phase per id). */
@@ -215,13 +238,66 @@ export interface RenderConfig {
   baseRadius: number;
   /** 0..1 multiplier on cosmetic motion (drift). 0 under prefers-reduced-motion. */
   motionScale: number;
+  /** EXPERIMENTAL (art-direction trial): draw pixel-art creature BODIES instead of plain glows. */
+  bodies: boolean;
   light: LightConfig;
 }
 export const DEFAULT_RENDER_CONFIG: RenderConfig = {
   baseRadius: 14,
   motionScale: 1,
+  bodies: false,
   light: DEFAULT_LIGHT_CONFIG,
 };
+
+// ---- creature BODY drawing (art-direction trial: sprite + the ember aura around it) -----------
+const RUNS: Record<SpriteState, RunSpan[]> = {
+  alive: toRuns(bodyGrid('alive')),
+  agonizing: toRuns(bodyGrid('agonizing')),
+  dead: toRuns(bodyGrid('dead')),
+};
+const rgba = ({ r, g, b }: { r: number; g: number; b: number }, a: number): string =>
+  `rgba(${r},${g},${b},${a.toFixed(3)})`;
+
+/**
+ * One being: the ember AURA behind (the world's warmth, breathing with the same envelope), then the
+ * pixel body at a strict INTEGER scale (hard edges — never fractional pixels), the crown flame on
+ * top (the runway datum: tall gold when rich, a guttering spark in agony, out when dead).
+ */
+function drawBody(ctx: Ctx2D, state: SpriteState, light: Light, pos: Point, base: number, id: string, t: number): void {
+  const px = Math.max(2, Math.round(base / 5)); // integer sprite-pixel size (skill: no 1.5x ever)
+  const ox = Math.round(pos.x - 8 * px);
+  const oy = Math.round(pos.y - 10 * px);
+  const env = pulseEnvelope(light, id, t);
+  const vitality = light.brightness; // brightness already encodes runway (floors/clamps applied)
+
+  if (state !== 'dead') {
+    // the aura: the creature's own heat, breathing — kept from the glow world (best of both)
+    const auraR = px * 13 * (0.85 + 0.3 * env) + base * light.spark;
+    const glow = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, auraR);
+    glow.addColorStop(0, rgba(light.color, 0.4 * light.brightness * env + 0.3 * light.spark));
+    glow.addColorStop(1, rgba(light.color, 0));
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, auraR, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const pal = spritePalette(state, vitality, light.color, emberColor(1));
+  const bob = state === 'alive' && env > 0.85 ? -px : 0; // whole-pixel breath lift, never a squash
+  for (const run of RUNS[state]) {
+    ctx.fillStyle = rgba(pal[run.color]!, 1);
+    ctx.fillRect(ox + run.x0 * px, oy + run.y * px + bob, (run.x1 - run.x0 + 1) * px, px);
+  }
+
+  // the crown flame: two frames at ~300ms lick; in agony it gutters with the flicker envelope
+  const frame = (Math.floor(t / 0.3) % 2) as 0 | 1;
+  if (state !== 'agonizing' || env > 0.55) {
+    for (const s of flameSpans(state, vitality, frame)) {
+      ctx.fillStyle = rgba(pal[s.color]!, 1);
+      ctx.fillRect(ox + s.x0 * px, oy - s.y * px + bob, (s.x1 - s.x0 + 1) * px, px);
+    }
+  }
+}
 
 /**
  * Draw the whole World for time `t` (seconds): clear the night, then one pulsing light per creature.
@@ -254,14 +330,22 @@ export function renderWorld(
     const { phase, progress } = phases[i]!;
     ctx.save();
     if (phase === 'tombstone') {
-      drawTombstone(ctx, pts[i]!, cfg.baseRadius); // the grave does not float
+      // the grave does not float; in bodies mode the grave IS the being: an ash mound, eyes closed
+      if (cfg.bodies) {
+        const light = stateToLight(c, t, cfg.light);
+        drawBody(ctx, 'dead', light, pts[i]!, cfg.baseRadius, c.id, t);
+      } else {
+        drawTombstone(ctx, pts[i]!, cfg.baseRadius);
+      }
     } else if (phase === 'glow' || phase === 'agony') {
       const light = stateToLight(c, t, cfg.light);
       const dimmed =
         dim < 1
           ? { ...light, brightness: light.brightness * dim, spark: light.spark * dim, halo: light.halo * dim }
           : light;
-      drawLight(ctx, dimmed, drift(pts[i]!, c.id, t, driftScale * dim), c.id, t, cfg.baseRadius);
+      const pos = drift(pts[i]!, c.id, t, driftScale * dim);
+      if (cfg.bodies) drawBody(ctx, phase === 'agony' ? 'agonizing' : 'alive', dimmed, pos, cfg.baseRadius, c.id, t);
+      else drawLight(ctx, dimmed, pos, c.id, t, cfg.baseRadius);
     } else {
       // a death in flight: the dying one is NEVER dimmed — it owns the frame
       drawDeathBeat(ctx, phase, progress, pts[i]!, cfg.baseRadius);

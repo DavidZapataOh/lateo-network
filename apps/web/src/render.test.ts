@@ -81,18 +81,23 @@ describe('3.1 T5 — Canvas render (dumb consumer of stateToLight)', () => {
     }
   });
 
-  it('append rescales the field UNIFORMLY: angles keep, one common radial factor (no reshuffle)', () => {
-    const cx = DIMS.width / 2;
-    const cy = DIMS.height / 2;
-    const before = layout(['a', 'b', 'c'], DIMS.width, DIMS.height);
-    const after = layout(['a', 'b', 'c', 'd'], DIMS.width, DIMS.height); // a newcomer joins
-    const angle = (p: { x: number; y: number }): number => Math.atan2(p.y - cy, p.x - cx);
-    const dist = (p: { x: number; y: number }): number => Math.hypot(p.x - cx, p.y - cy);
-    const ratios = [0, 1, 2].map((i) => dist(after[i]!) / dist(before[i]!));
-    for (let i = 0; i < 3; i++) {
-      expect(angle(after[i]!)).toBeCloseTo(angle(before[i]!), 10); // direction never changes
-      expect(ratios[i]!).toBeCloseTo(ratios[0]!, 10); // one world-wide scale factor
+  it('NO OVERLAP: bodies never stack — every pair keeps a minimum separation (9 and 150)', () => {
+    for (const n of [9, 150]) {
+      const pts = layout(Array.from({ length: n }, (_, i) => `c${i}`), DIMS.width, DIMS.height);
+      const intimacy = Math.min(1, Math.max(0.72, Math.sqrt(n / 40)));
+      const minSep = 0.18 * Math.min(DIMS.width, DIMS.height) * intimacy * Math.sqrt(8 / Math.max(n, 8));
+      for (let i = 0; i < n; i++) {
+        for (let j = i + 1; j < n; j++) {
+          const d = Math.hypot(pts[j]!.x - pts[i]!.x, pts[j]!.y - pts[i]!.y);
+          expect(d).toBeGreaterThanOrEqual(minSep * 0.85); // relaxed pairs settle at ~minSep
+        }
+      }
     }
+  });
+
+  it('layout stays deterministic after relaxation (same ids => identical points)', () => {
+    const ids = Array.from({ length: 20 }, (_, i) => `c${i}`);
+    expect(layout(ids, DIMS.width, DIMS.height)).toEqual(layout(ids, DIMS.width, DIMS.height));
   });
 
   it('a dead creature is a tombstone (stroke), NOT a glow (no gradient)', () => {
