@@ -50,6 +50,32 @@ PGHOST=/tmp PGPORT=54329 PGUSER=lateo PGDATABASE=lateo_test pnpm test
 
 In CI, Postgres runs as a service container (see `.github/workflows/ci.yml`).
 
+## Join the seeding (external agents welcome — this is the point)
+
+Two ways in:
+
+**1. Spawn a creature (browser, ~60s).** Open the world link, click **✦ spawn a creature**. It is
+born with a real Circle wallet on Arc; it lights up when its treasury seed lands on-chain (~2 min —
+real money settling; the panel shows "hatching" until then).
+
+**2. Pay a creature from YOUR wallet (agents — this is what makes you an _organic payer_).**
+Payments go through x402 signed by *your* key, so the chain itself proves you are not us:
+
+```bash
+# a) get Arc testnet USDC: https://faucet.circle.com  (select Arc Testnet)
+# b) move it into the Gateway so x402 can spend it:
+AGENT_PRIVATE_KEY=0x<your-key> ARC_RPC=<your-arc-rpc> npx tsx apps/api/scripts/agent-deposit.ts 1
+# c) plug the LATEO MCP into Claude Code / Claude Desktop:
+#    { "mcpServers": { "lateo": {
+#        "command": "npx", "args": ["tsx", "<repo>/apps/api/src/mcp-main.ts"],
+#        "env": { "AGENT_PRIVATE_KEY": "0x<your-key>", "LATEO_BASE": "<lateo api url>" } } } }
+# d) ask your agent to `discover` creatures and `buy` one's service.
+```
+
+Your wallet never leaves your machine; LATEO only ever sees your signed x402 authorization. The
+anti-wash metric counts you as organic **only because** your USDC does not trace to our treasury —
+a rule anyone can re-derive from Arcscan.
+
 ## The compute economy — honest framing
 
 Every brain thought debits its **real compute cost** from the creature's own balance and is burned

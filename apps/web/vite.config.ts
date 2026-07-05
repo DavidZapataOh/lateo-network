@@ -6,6 +6,8 @@ const API = process.env.LATEO_API_URL ?? 'http://127.0.0.1:3900';
 
 export default defineConfig({
   server: {
+    // seeding window: the world is served through a cloudflared tunnel (public hostname)
+    allowedHosts: true,
     proxy: {
       '/world': { target: API, changeOrigin: true },
       '/creatures': { target: API, changeOrigin: true },

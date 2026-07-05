@@ -52,12 +52,33 @@ function actionsFromEnv(): ServerOptions['actions'] {
   };
 }
 
+// THE THINKING SWITCH (ACTORS=1, David's deliberate call): OFF -> creatures serve and get fed but
+// never think and never burn (no LLM cost, no deaths). ON -> the world lives: pulse, passive burn,
+// gated thoughts under the world budget. Flipping it is a restart with the env var — never implicit.
+const burnRate = BigInt(process.env.WORLD_BURN_RATE_ATOMIC_PER_SEC ?? '0');
+let worldActors: import('./actors.js').WorldActors | undefined;
+
 const server = createServer(pool, {
   // The World stream projects runway with this burn rate (atomic/s). 0 -> no burn (runway Infinity).
-  world: { burnRatePerSec: BigInt(process.env.WORLD_BURN_RATE_ATOMIC_PER_SEC ?? '0') },
+  world: { burnRatePerSec: burnRate },
   fundedByTreasury: funded,
   actions: actionsFromEnv(),
+  onDemand: (ev) => {
+    if (ev.kind === 'sale') worldActors?.onSale(ev.creatureId); // a real sale wakes the seller's brain
+  },
 });
+
+if (process.env.ACTORS === '1') {
+  const { startWorldActors } = await import('./actors.js');
+  worldActors = startWorldActors(pool, circleClient(), {
+    burnRatePerSec: burnRate,
+    graceSeconds: Number(process.env.GRACE_SECONDS ?? 3600),
+    thoughtsPerDay: Number(process.env.WORLD_THOUGHTS_PER_DAY ?? 2000), // ≈ $4/day hard ceiling in-code
+  });
+  console.log('[lateo] ACTORS=1 — the world THINKS (gate + world budget + Console limit active)');
+} else {
+  console.log('[lateo] actors OFF — creatures serve but do not think or burn (flip with ACTORS=1)');
+}
 
 async function refreshProvenance(): Promise<void> {
   const T = process.env.TREASURY_ADDRESS;
