@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type pg from 'pg';
 import type Anthropic from '@anthropic-ai/sdk';
 import { listCreatures, getWorldSnapshot } from './readmodel.js';
+import { creaturePanel, worldStats } from './panel.js';
 import { QuoteStore, isMenuService } from './quote.js';
 import { requirementsFor, verify, type SignedAuthorization } from './rail.js';
 import type { DemandEvent } from './demand.js';
@@ -23,6 +24,10 @@ export interface ServerOptions {
   anthropic?: Anthropic;
   /** The World SSE stream (ADR-0013 read-model): the burn rate the projection uses for runway. */
   world?: { burnRatePerSec: Atomic; intervalMs?: number };
+  /** 2.5 provenance set (wallets funded by the published treasury) for the anti-wash stats bar. */
+  fundedByTreasury?: Set<string>;
+  /** Explorer base for wallet links (defaults to Arc testnet's Arcscan). */
+  arcscanBase?: string;
 }
 
 /**
@@ -65,6 +70,26 @@ async function handle(
       return;
     }
     streamWorld(req, res, pool, opts);
+    return;
+  }
+  if (url === '/world/stats') {
+    if (req.method !== 'GET') {
+      send(res, 405, { error: 'method_not_allowed' });
+      return;
+    }
+    // anti-wash headline by ON-CHAIN PROVENANCE (2.5): funded-by-treasury set injected via options
+    send(res, 200, await worldStats(pool, opts.fundedByTreasury ?? new Set()));
+    return;
+  }
+  const panelMatch = /^\/c\/([^/?]+)\/panel$/.exec(url);
+  if (panelMatch) {
+    if (req.method !== 'GET') {
+      send(res, 405, { error: 'method_not_allowed' });
+      return;
+    }
+    const p = await creaturePanel(pool, panelMatch[1]!, { arcscanBase: opts.arcscanBase });
+    if (!p) send(res, 404, { error: 'not_found' });
+    else send(res, 200, p);
     return;
   }
   const service = /^\/c\/([^/?]+)/.exec(url);

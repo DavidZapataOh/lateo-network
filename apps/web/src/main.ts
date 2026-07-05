@@ -2,7 +2,7 @@
 // REAL snapshot (no synthetic data — every light is a creature row in the ledger), and paints it
 // with renderWorld on a requestAnimationFrame loop. It never writes; EventSource auto-reconnects
 // and the server re-sends a fresh snapshot on connect (stale-proof re-sync).
-import { renderWorld, DEFAULT_RENDER_CONFIG, type WorldCreature, type Ctx2D } from './render.js';
+import { renderWorld, layout, DEFAULT_RENDER_CONFIG, type WorldCreature, type Ctx2D } from './render.js';
 import { DEFAULT_LIGHT_CONFIG } from './stateToLight.js';
 import { bootstrap, observe, type PhaseState } from './deathPhase.js';
 
@@ -84,3 +84,113 @@ function frame(): void {
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
+
+// ---- 3.3 chrome: anti-wash stats bar + creature detail panel (GET-only — a read-model never
+// mutates value; the create/feed/buy actions live on the transactional API, ADR-0010/0013) -------
+interface StatsDto {
+  creatures: number;
+  alive: number;
+  agonizing: number;
+  dead: number;
+  usdcMovedAtomic: string;
+  organicPayers: number;
+  treasuryFundedPayers: number;
+  selfDealExcluded: number;
+}
+interface PanelDto {
+  id: string;
+  serviceType: string;
+  state: string;
+  walletAddress: string;
+  arcscanUrl: string;
+  balances: { settledAtomic: string; pendingAtomic: string; liveAtomic: string };
+  reconciled: boolean | null;
+  entries: Array<{ kind: string; amountAtomic: string; counterparty: string | null; status: string; settleId: string | null; createdAt: string }>;
+}
+
+const usdc = (atomic: string): string => (Number(atomic) / 1_000_000).toFixed(6).replace(/0+$/, '').replace(/\.$/, '.0');
+const esc = (s: string): string => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
+
+const statsEl = document.getElementById('stats')!;
+async function refreshStats(): Promise<void> {
+  try {
+    const s = (await (await fetch('/world/stats')).json()) as StatsDto;
+    // the HEADLINE is organic-by-provenance (2.5): treasury-funded reported apart, never inflating it
+    statsEl.innerHTML =
+      `<span><b>${s.creatures}</b> creatures</span>` +
+      `<span><b>${s.alive}</b> alive · <b>${s.agonizing}</b> agonizing · <b>${s.dead}</b> dead</span>` +
+      `<span><b>${usdc(s.usdcMovedAtomic)}</b> USDC moved</span>` +
+      `<span class="organic"><b>${s.organicPayers}</b> organic payers <span title="external by on-chain provenance: wallets whose USDC does not trace to the published treasury">(by provenance)</span></span>` +
+      `<span><b>${s.treasuryFundedPayers}</b> treasury-funded (excluded)</span>`;
+  } catch {
+    /* stats hiccups never break the world */
+  }
+}
+void refreshStats();
+setInterval(() => void refreshStats(), 5000);
+
+const panelEl = document.getElementById('panel')!;
+function closePanel(): void {
+  panelEl.classList.remove('open');
+  if (window.location.hash) history.replaceState(null, '', ' ');
+}
+async function openPanel(id: string): Promise<void> {
+  const res = await fetch(`/c/${id}/panel`);
+  if (!res.ok) return;
+  const p = (await res.json()) as PanelDto;
+  const rec =
+    p.reconciled === null
+      ? '<span class="muted">not yet reconciled</span>'
+      : p.reconciled
+        ? '<span class="ok">reconciled ✓ (ledger = on-chain)</span>'
+        : '<span class="warn">discrepancy ✗</span>';
+  const entries = p.entries
+    .slice(-30)
+    .reverse()
+    .map(
+      (e) =>
+        `<tr><td>${esc(e.kind)}</td><td>${usdc(e.amountAtomic)}</td><td>${esc(e.status)}</td>` +
+        `<td class="muted">${e.settleId ? esc(e.settleId.slice(0, 8)) : ''}</td></tr>`,
+    )
+    .join('');
+  panelEl.innerHTML =
+    `<button class="close" aria-label="close">×</button>` +
+    `<h2>creature ${esc(p.id.slice(0, 8))}</h2>` +
+    `<div>${esc(p.serviceType)} · <b>${esc(p.state)}</b></div>` +
+    `<div style="margin-top:10px">wallet (on-chain identity):<br><a href="${esc(p.arcscanUrl)}" target="_blank" rel="noreferrer">${esc(p.walletAddress)}</a></div>` +
+    `<table>` +
+    `<tr><td>settled <span class="ok">✓ on-chain</span></td><td><b>${usdc(p.balances.settledAtomic)}</b> USDC</td></tr>` +
+    `<tr><td>pending <span class="muted">(next batch)</span></td><td>${usdc(p.balances.pendingAtomic)} USDC</td></tr>` +
+    `<tr><td>live = settled − pending</td><td><b>${usdc(p.balances.liveAtomic)}</b> USDC</td></tr>` +
+    `</table>` +
+    `<div style="margin-top:8px">${rec}</div>` +
+    `<div style="margin-top:12px" class="muted">ledger (latest first)</div>` +
+    `<table>${entries}</table>`;
+  panelEl.classList.add('open');
+  panelEl.querySelector('.close')!.addEventListener('click', closePanel);
+}
+
+// click a being -> its panel (hit-test against the same deterministic layout the render uses)
+canvas.addEventListener('click', (ev) => {
+  const dpr = window.devicePixelRatio || 1;
+  const x = ev.clientX * dpr;
+  const y = ev.clientY * dpr;
+  const pts = layout(snapshot.map((c) => c.id), canvas.width, canvas.height);
+  const hitR = cfg.baseRadius * 4;
+  let best: { id: string; d: number } | null = null;
+  snapshot.forEach((c, i) => {
+    const d = Math.hypot(pts[i]!.x - x, pts[i]!.y - y);
+    if (d < hitR && (best === null || d < best.d)) best = { id: c.id, d };
+  });
+  if (best !== null) {
+    const chosen = best as { id: string; d: number };
+    history.replaceState(null, '', `#c=${chosen.id}`);
+    void openPanel(chosen.id);
+  } else {
+    closePanel();
+  }
+});
+
+// deep link: /#c=<id> opens the panel directly (also how evidence captures target a creature)
+const hashId = /^#c=(.+)$/.exec(window.location.hash)?.[1];
+if (hashId) void openPanel(hashId);

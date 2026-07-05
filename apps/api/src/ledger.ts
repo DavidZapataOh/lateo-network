@@ -1,5 +1,6 @@
 import type pg from 'pg';
 import type { Atomic } from './money.js';
+import { balancesOn, type Balances } from './balances.js';
 
 // Anything with `.query` — Pool or PoolClient (to read balances inside or outside a txn).
 type Queryable = Pick<pg.Pool, 'query'>;
@@ -77,29 +78,9 @@ export async function createCreature(
   return r.rows[0]!.id;
 }
 
-export interface Balances {
-  /** On-chain-settled net value (income+feed settled − burns settled). */
-  settled: Atomic;
-  /** Signed but not-yet-settled authorizations (outgoing burns). */
-  pending: Atomic;
-  /** Honest spendable balance = settled − pending (ADR-0002). */
-  live: Atomic;
-}
-
-const BALANCES_SQL = `
-  select
-    coalesce(sum(amount_atomic) filter (where status='settled' and kind in ('income','feed')),0)
-    - coalesce(sum(amount_atomic) filter (where status='settled' and kind in ('burn_passive','burn_active')),0) as settled,
-    coalesce(sum(amount_atomic) filter (where status='pending' and kind in ('burn_passive','burn_active')),0) as pending
-  from ledger_entries where creature_id = $1`;
-
-/** Honest balance: live = settled − pending (ADR-0002). `pending` = authorized burns not yet settled. */
-export async function balancesOn(q: Queryable, creatureId: string): Promise<Balances> {
-  const r = await q.query<{ settled: string; pending: string }>(BALANCES_SQL, [creatureId]);
-  const settled = BigInt(r.rows[0]!.settled);
-  const pending = BigInt(r.rows[0]!.pending);
-  return { settled, pending, live: settled - pending };
-}
+// The canonical balance arithmetic lives in balances.ts (reader-only module) so read-models can
+// reuse it without importing this write API (ADR-0013). Re-exported here for the writers' callers.
+export { balancesOn, type Balances } from './balances.js';
 
 export function balances(pool: pg.Pool, creatureId: string): Promise<Balances> {
   return balancesOn(pool, creatureId);
