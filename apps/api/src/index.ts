@@ -1,7 +1,9 @@
 import { makePool } from './db.js';
+import { migrate } from './ledger.js';
 import { createServer, type ServerOptions } from './server.js';
 import { fundedByTreasury, onchainFunding } from './provenance.js';
 import { circleClient, createCreatureWallet, seedFromTreasury, gatewayAvailable } from './rail.js';
+import { reconcileWorld } from './reconcile.js';
 
 const pool = makePool();
 const port = Number(process.env.PORT ?? 3000);
@@ -62,6 +64,23 @@ async function refreshProvenance(): Promise<void> {
 }
 void refreshProvenance();
 setInterval(() => void refreshProvenance(), 10 * 60 * 1000);
+
+// 3.4 reconciliation job: read-only over value; upserts the per-creature marker the panel reads.
+// Fail-safe by design: RPC down -> 'reconciling', never a false ✓; discrepancies are for humans.
+async function runReconciliation(): Promise<void> {
+  try {
+    const verdicts = await reconcileWorld(pool, { gatewayAvailable });
+    const n = { reconciled: 0, reconciling: 0, discrepancy: 0 };
+    for (const v of verdicts) n[v.status]++;
+    console.log(`[lateo] reconciliation: ✓${n.reconciled} ~${n.reconciling} ✗${n.discrepancy}`);
+  } catch (e) {
+    console.error('[lateo] reconciliation run failed (markers keep last state):', String(e).slice(0, 200));
+  }
+}
+void runReconciliation();
+setInterval(() => void runReconciliation(), 5 * 60 * 1000);
+
+await migrate(pool); // idempotent schema — a fresh lateo_world boots ready
 
 server.listen(port, () => {
   console.log(`[lateo] api listening on :${port}`);

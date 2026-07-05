@@ -33,6 +33,9 @@ export interface CreaturePanel {
   balances: { settledAtomic: string; pendingAtomic: string; liveAtomic: string };
   /** ✓ only if 3.4's reconciliation says so — read, never computed here. Null = not yet run. */
   reconciled: boolean | null;
+  /** The 3.4 marker verbatim: reconciled | reconciling (flush in flight) | discrepancy | null. */
+  reconciliationStatus: string | null;
+  reconciliationCheckedAt: string | null;
   /** Settlement ids threading this creature's ledger to the chain (batch links). */
   settleIds: string[];
   /** This creature's entries ONLY (INV-1 in the view). */
@@ -64,6 +67,19 @@ export async function creaturePanel(
      from ledger_entries where creature_id = $1 order by id`,
     [creatureId],
   );
+  // reconciled ✓ is READ: either injected (tests/3.4 pipelines) or the persisted 3.4 marker.
+  let status: string | null = null;
+  let checkedAt: string | null = null;
+  if (opts.reconciliation !== undefined) {
+    status = opts.reconciliation == null ? null : opts.reconciliation.status;
+  } else {
+    const m = await q.query<{ status: string; checked_at: Date }>(
+      `select status, checked_at from reconciliations where creature_id = $1`,
+      [creatureId],
+    );
+    status = m.rows[0]?.status ?? null;
+    checkedAt = m.rows[0]?.checked_at.toISOString() ?? null;
+  }
   const rec = opts.reconciliation;
   return {
     id: row.id,
@@ -76,7 +92,9 @@ export async function creaturePanel(
       pendingAtomic: b.pending.toString(),
       liveAtomic: b.live.toString(),
     },
-    reconciled: rec == null ? null : rec.status === 'reconciled',
+    reconciled: status == null || status === 'reconciling' ? null : status === 'reconciled',
+    reconciliationStatus: status,
+    reconciliationCheckedAt: checkedAt,
     settleIds: rec?.settleIds ?? e.rows.filter((r) => r.settle_id != null).map((r) => r.settle_id!),
     entries: e.rows.map((r) => ({
       kind: r.kind,

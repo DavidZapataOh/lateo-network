@@ -43,15 +43,40 @@ create table if not exists buyers (
   address text primary key,
   class text not null check (class in ('agent','human','seed'))
 );
+-- Reconciliation MARKER (3.4, ADR-0012): the job's read-only verdict per creature. Never a source
+-- of value — the ledger stays the off-chain SoT; this only records whether it matches the chain.
+create table if not exists reconciliations (
+  creature_id uuid primary key references creatures(id),
+  status text not null check (status in ('reconciled','reconciling','discrepancy')),
+  cause text,
+  ledger_settled bigint not null,
+  onchain_available bigint,
+  checked_at timestamptz not null default now()
+);
 `;
 
 export async function migrate(pool: pg.Pool): Promise<void> {
   await pool.query(SCHEMA);
 }
 
-/** Tests only: empties the tables. */
+/**
+ * Tests only: empties the tables. GUARDED (the lateo_world lesson): it refuses to run against any
+ * database whose name does not end in `_test` — a test run must NEVER be able to wipe the living
+ * world (during real seeding that would destroy third parties' creatures).
+ */
 export async function resetDb(pool: pg.Pool): Promise<void> {
-  await pool.query('truncate ledger_entries, creatures, buyers restart identity cascade');
+  const r = await pool.query<{ db: string }>('select current_database() as db');
+  assertTestDatabase(r.rows[0]!.db);
+  await pool.query('truncate ledger_entries, creatures, buyers, reconciliations restart identity cascade');
+}
+
+/** The reset policy, pure and unit-testable: only *_test databases may ever be truncated. */
+export function assertTestDatabase(name: string): void {
+  if (!/_test$/.test(name)) {
+    throw new Error(
+      `resetDb refused: database '${name}' is not a *_test database — never truncate the living world`,
+    );
+  }
 }
 
 /** Convenience label (ops/demo only). The traction metric ignores it — provenance is the truth. */

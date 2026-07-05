@@ -105,6 +105,7 @@ interface PanelDto {
   arcscanUrl: string;
   balances: { settledAtomic: string; pendingAtomic: string; liveAtomic: string };
   reconciled: boolean | null;
+  reconciliationStatus: string | null;
   entries: Array<{ kind: string; amountAtomic: string; counterparty: string | null; status: string; settleId: string | null; createdAt: string }>;
 }
 
@@ -139,11 +140,13 @@ async function openPanel(id: string): Promise<void> {
   if (!res.ok) return;
   const p = (await res.json()) as PanelDto;
   const rec =
-    p.reconciled === null
-      ? '<span class="muted">not yet reconciled</span>'
-      : p.reconciled
-        ? '<span class="ok">reconciled ✓ (ledger = on-chain)</span>'
-        : '<span class="warn">discrepancy ✗</span>';
+    p.reconciliationStatus === 'reconciled'
+      ? '<span class="ok">reconciled ✓ (ledger = on-chain)</span>'
+      : p.reconciliationStatus === 'reconciling'
+        ? '<span class="muted">reconciling… (batch flush in flight — normal)</span>'
+        : p.reconciliationStatus === 'discrepancy'
+          ? '<span class="warn">discrepancy ✗ (ledger ≠ chain)</span>'
+          : '<span class="muted">not yet reconciled</span>';
   const entries = p.entries
     .slice(-30)
     .reverse()
