@@ -69,10 +69,16 @@ setInterval(() => void refreshProvenance(), 10 * 60 * 1000);
 // Fail-safe by design: RPC down -> 'reconciling', never a false ✓; discrepancies are for humans.
 async function runReconciliation(): Promise<void> {
   try {
-    const verdicts = await reconcileWorld(pool, { gatewayAvailable });
+    const { verdicts, conservation } = await reconcileWorld(pool, { gatewayAvailable });
     const n = { reconciled: 0, reconciling: 0, discrepancy: 0 };
     for (const v of verdicts) n[v.status]++;
-    console.log(`[lateo] reconciliation: ✓${n.reconciled} ~${n.reconciling} ✗${n.discrepancy}`);
+    console.log(
+      `[lateo] reconciliation: ✓${n.reconciled} ~${n.reconciling} ✗${n.discrepancy} | ` +
+        `INV-3 aggregate: ${conservation.status} (off=${conservation.offChainTotal} on=${conservation.onChainTotal} unexplained=${conservation.unexplained})`,
+    );
+    if (conservation.status === 'discrepancy') {
+      console.error('[lateo] INV-3 VIOLATION SUSPECTED — value created/destroyed. HUMAN EYES NOW.');
+    }
   } catch (e) {
     console.error('[lateo] reconciliation run failed (markers keep last state):', String(e).slice(0, 200));
   }
