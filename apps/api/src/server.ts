@@ -37,6 +37,10 @@ export interface ServerOptions {
     feedUsdc: string;
     feedAtomic: Atomic;
     graceSeconds: number;
+    /** Spawn rate cap (defaults 10/hour): every spawn spends treasury USDC + a Circle wallet —
+     * without this, one curl loop drains the treasury and floods the world. */
+    maxSpawnsPerWindow?: number;
+    spawnWindowS?: number;
   };
 }
 
@@ -48,8 +52,9 @@ export interface ServerOptions {
  */
 export function createServer(pool: pg.Pool, opts: ServerOptions = {}): http.Server {
   const quotes = new QuoteStore();
+  const spawnTimes: number[] = []; // rate-limit state for POST /spawn (treasury protection)
   return http.createServer((req, res) => {
-    void handle(req, res, pool, quotes, opts);
+    void handle(req, res, pool, quotes, opts, spawnTimes);
   });
 }
 
@@ -59,6 +64,7 @@ async function handle(
   pool: pg.Pool,
   quotes: QuoteStore,
   opts: ServerOptions,
+  spawnTimes: number[] = [],
 ): Promise<void> {
   const url = req.url ?? '';
   if (req.method === 'GET' && url === '/health') {
@@ -108,6 +114,17 @@ async function handle(
       send(res, 503, { error: 'actions_disabled', note: 'spawn rail not configured' });
       return;
     }
+    // Rate cap: each spawn spends real treasury USDC + provisions a Circle wallet. A curl loop
+    // must not be able to drain the treasury or flood the world with junk creatures.
+    const nowS = Date.now() / 1000;
+    const windowS = opts.actions.spawnWindowS ?? 3600;
+    const cap = opts.actions.maxSpawnsPerWindow ?? 10;
+    while (spawnTimes.length && spawnTimes[0]! <= nowS - windowS) spawnTimes.shift();
+    if (spawnTimes.length >= cap) {
+      send(res, 429, { error: 'too_many_spawns', note: `cap ${cap} per ${windowS}s — try later` });
+      return;
+    }
+    spawnTimes.push(nowS);
     const body = await readJsonBody(req);
     const serviceType = body.serviceType === 'summary-with-citations' ? 'summary-with-citations' : 'url-to-json';
     const s = await spawnCreature(pool, opts.actions.rail, {

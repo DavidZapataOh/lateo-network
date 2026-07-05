@@ -16,6 +16,15 @@ export const ROSTER: Record<ModelId, string> = {
   premium: 'claude-opus-4-8',
 };
 
+/**
+ * What ONE brain thought costs the creature, calibrated 1:1 to the REAL provider bill (option B):
+ * measured prompt ≈ 1,450 input tokens (BRAIN_SYSTEM ~1,240 + context ~200) + ~150 output tokens on
+ * Haiku 4.5 ($1/M in, $5/M out) ≈ $0.002. The USDC burned on-chain for thinking IS the compute
+ * cost — the visible economy mirrors the real one. (Honest framing: on testnet the platform
+ * SUBSIDIZES the provider invoice; on mainnet this same burn would pay it. See README.)
+ */
+export const THOUGHT_COST_ATOMIC: Atomic = 2000n; // 0.002 USDC
+
 /** Reads ANTHROPIC_API_KEY from the environment (loaded from .env.local by scripts/tests). */
 export function anthropicClient(): Anthropic {
   return new Anthropic();

@@ -95,3 +95,38 @@ describe('actor loop — the organism runs itself (wiring, deterministic)', () =
     expect(actor.traces).toHaveLength(1); // cooldown suppressed the other two
   });
 });
+
+describe('option B — starvation is REAL: a broke creature cannot buy its next thought', () => {
+  it('balance < thoughtCost -> the brain never fires (no trace, no LLM); income revives thinking', async () => {
+    const id = await createCreature(pool, { walletAddress: '0xB1', serviceType: 'url-to-json' });
+    await postCredit(pool, { creatureId: id, kind: 'income', amount: 1000n }); // alive, but poor
+    const actor = makeActor(id, { thoughtCost: 2000n }); // one thought costs more than it has
+    actor.onClient(100);
+    await actor.drain();
+    expect(actor.traces).toHaveLength(0); // it wanted to react — it could not AFFORD to
+
+    await postCredit(pool, { creatureId: id, kind: 'income', amount: 5000n }); // a client pays
+    actor.onClient(101);
+    await actor.drain();
+    expect(actor.traces).toHaveLength(1); // funds arrived -> it can buy thoughts again
+  });
+
+  it('the WORLD budget caps thinking across actors (graceful hold, no LLM call)', async () => {
+    const { WorldThoughtBudget } = await import('./thoughtBudget.js');
+    const budget = new WorldThoughtBudget(2); // the whole world may afford 2 thoughts today
+    const a = await createCreature(pool, { walletAddress: '0xB2', serviceType: 'url-to-json' });
+    const b = await createCreature(pool, { walletAddress: '0xB3', serviceType: 'url-to-json' });
+    await postCredit(pool, { creatureId: a, kind: 'income', amount: 100_000n });
+    await postCredit(pool, { creatureId: b, kind: 'income', amount: 100_000n });
+    const actorA = makeActor(a, { thoughtCost: 10n, worldBudget: budget });
+    const actorB = makeActor(b, { thoughtCost: 10n, worldBudget: budget });
+    actorA.onClient(100);
+    actorA.onClient(101);
+    actorB.onClient(102);
+    await actorA.drain();
+    await actorB.drain();
+    // 3 events, budget 2: the world held on the third — degradation, not a provider error
+    expect(actorA.traces.length + actorB.traces.length).toBe(2);
+    expect(budget.spentInWindow(200)).toBe(2);
+  });
+});

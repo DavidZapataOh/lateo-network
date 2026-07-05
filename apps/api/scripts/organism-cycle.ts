@@ -19,7 +19,7 @@ import {
 } from '../src/rail.js';
 import { createServer } from '../src/server.js';
 import { CreatureActor } from '../src/actorLoop.js';
-import { AnthropicLlmBrain } from '../src/llm.js';
+import { AnthropicLlmBrain, THOUGHT_COST_ATOMIC } from '../src/llm.js';
 import { createPassiveBurnRail } from '../src/passiveBurn.js';
 import { usdcToAtomic, atomicToUsdc } from '../src/money.js';
 
@@ -70,7 +70,7 @@ async function main(): Promise<void> {
     llm: new AnthropicLlmBrain(undefined, { minPrice: 1000n, maxPrice: 1_000_000n }),
     guardrailCfg: { minPrice: 1000n, maxPrice: 1_000_000n, roster: ['economy', 'standard', 'premium'] },
     brainOptions: { cooldownMs: 0, maxPerWindow: 5, windowMs: 60, criticalRunway: 30 },
-    thoughtCost: usdcToAtomic('0.0002'),
+    thoughtCost: THOUGHT_COST_ATOMIC, // calibrated 1:1 to the real provider bill (option B)
     clientWindowS: 300,
     clock: () => Math.floor(Date.now() / 1000),
   });

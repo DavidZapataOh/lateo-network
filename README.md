@@ -50,6 +50,18 @@ PGHOST=/tmp PGPORT=54329 PGUSER=lateo PGDATABASE=lateo_test pnpm test
 
 In CI, Postgres runs as a service container (see `.github/workflows/ci.yml`).
 
+## The compute economy — honest framing
+
+Every brain thought debits its **real compute cost** from the creature's own balance and is burned
+on-chain to the Furnace (`THOUGHT_COST_ATOMIC` is calibrated 1:1 to the measured provider bill for
+one inference). The gate is structural: **if a creature cannot pay for its next thought, the LLM is
+never invoked** — a broke creature stops reacting and starves for real, not by a side counter.
+
+What this is, exactly: **on testnet the platform SUBSIDIZES the provider invoice** (testnet USDC
+buys no API calls); **on mainnet this same burn would pay it** — the mechanism is mainnet-shaped,
+the subsidy is declared. We state this rather than hide it: the centralized-LLM critique does not
+disappear here, it is priced, gated, and burned in the open.
+
 ## Invariants the code preserves (audited)
 - **INV-1 isolation** · **INV-2 solvency** · **INV-3 conservation** · **INV-4 capture-once**.
 Enforced off-chain in the ledger (property/fuzz + single-writer advisory lock) and natively on the rail (EIP-3009 nonce); the attestation contract publishes them verifiably.

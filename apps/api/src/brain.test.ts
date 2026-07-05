@@ -12,9 +12,13 @@ function countingInferrer(): Inferrer & { calls: number } {
     },
   };
 }
-function countingThoughtRail(): ThoughtRail & { calls: number } {
+function countingThoughtRail(afford = true): ThoughtRail & { calls: number; afford: boolean } {
   return {
     calls: 0,
+    afford,
+    canAfford() {
+      return this.afford;
+    },
     async burnForThought() {
       this.calls++;
     },
@@ -109,5 +113,29 @@ describe('2.2 T6 — conservation in critical: agony is dramatized in the free p
     expect(healthy).toBe(4);
     expect(critical).toBe(1); // only the client event fires
     expect(critical).toBeLessThan(healthy); // bites if agony made it think MORE (panic)
+  });
+});
+
+describe('option B — THE GATE: no funds, no thought (Conway-shaped starvation)', () => {
+  it('a creature that cannot pay does NOT think, for ANY trigger — the LLM is never invoked', async () => {
+    const inferrer = countingInferrer();
+    const rail = countingThoughtRail(false); // cannot afford one thought
+    const brain = new Brain(OPTS, inferrer, rail);
+    for (const trigger of ['client', 'threshold', 'idle'] as const) {
+      expect(await brain.onEvent(trigger, { now: 100_000, runway: HEALTHY })).toBe(false);
+    }
+    expect(inferrer.calls).toBe(0); // the provider bill can never outrun the balance
+    expect(rail.calls).toBe(0); // and nothing is debited for thoughts that never happened
+  });
+
+  it('funds return (a client pays / a feed lands) -> thinking resumes', async () => {
+    const inferrer = countingInferrer();
+    const rail = countingThoughtRail(false);
+    const brain = new Brain(OPTS, inferrer, rail);
+    expect(await brain.onEvent('client', { now: 100_000, runway: HEALTHY })).toBe(false);
+    rail.afford = true; // income arrived — it can buy a thought again
+    expect(await brain.onEvent('client', { now: 200_000, runway: HEALTHY })).toBe(true);
+    expect(inferrer.calls).toBe(1);
+    expect(rail.calls).toBe(1);
   });
 });

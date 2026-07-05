@@ -7,6 +7,7 @@ import { Brain, type BrainOptions, type BrainTrigger } from './brain.js';
 import { actorStep, type TraceEntry } from './actor.js';
 import type { LlmBrain } from './decide.js';
 import type { GuardrailConfig } from './guardrail.js';
+import type { WorldThoughtBudget } from './thoughtBudget.js';
 
 export interface CreatureActorDeps {
   pool: pg.Pool;
@@ -19,11 +20,13 @@ export interface CreatureActorDeps {
   llm: LlmBrain; // the real (or stub) decision maker
   guardrailCfg: GuardrailConfig;
   brainOptions: BrainOptions; // anti-spiral: cooldown + window cap + criticalRunway
-  thoughtCost: Atomic; // accrued into the burn each time the brain fires (a thought costs USDC)
+  thoughtCost: Atomic; // debited from the balance each thought — and GATES it (no funds, no thought)
   clientWindowS: number; // window for the recent-clients demand signal
   pulseMs?: number; // default 1000
   idleMs?: number; // idle re-eval cadence (slow); omit to disable
   clock?: () => number; // seconds; default Date.now()/1000 (injectable for tests)
+  /** Optional WORLD-wide thought ceiling (shared across actors): at the cap, hold without the LLM. */
+  worldBudget?: WorldThoughtBudget;
 }
 
 /**
@@ -45,6 +48,8 @@ export class CreatureActor {
   private idleTimer?: ReturnType<typeof setInterval>;
   private draining = false;
   private lastTrigger: BrainTrigger = 'idle';
+  /** Live balance as of the last projection (drain refreshes it right before the brain runs). */
+  private lastLive: Atomic = 0n;
 
   constructor(private readonly deps: CreatureActorDeps) {
     this.metabolism = new Metabolism({ ratePerTick: deps.ratePerTick, nTicks: deps.nTicks, rail: deps.burnRail });
@@ -64,7 +69,17 @@ export class CreatureActor {
           this.traces.push(t);
         },
       },
-      { burnForThought: async () => this.metabolism.accrue(deps.thoughtCost) },
+      {
+        // THE GATE (option B): a thought is a purchase from the creature's OWN balance. No funds
+        // (or world budget exhausted) -> the brain never fires, the LLM is never called. A broke
+        // creature starves for real. Reinforces INV-2: thinking can never overdraw.
+        canAfford: () =>
+          this.lastLive >= deps.thoughtCost && (deps.worldBudget?.hasRoom(this.now()) ?? true),
+        burnForThought: async () => {
+          this.metabolism.accrue(deps.thoughtCost);
+          deps.worldBudget?.consume(this.now());
+        },
+      },
     );
   }
 
@@ -121,7 +136,9 @@ export class CreatureActor {
         const ev = this.queue.shift()!;
         if ((await this.lifeState()) === 'dead') continue;
         const proj = await this.projection();
-        const runway = runwayOf({ ...proj, accumulated: this.metabolism.accumulatedBurn });
+        const accumulated = this.metabolism.accumulatedBurn;
+        const runway = runwayOf({ ...proj, accumulated });
+        this.lastLive = proj.settled - proj.pending - accumulated; // what a thought can draw on NOW
         this.lastTrigger = ev.trigger;
         await this.brain.onEvent(ev.trigger, { now: ev.now, runway });
       }
