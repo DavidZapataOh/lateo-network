@@ -13,6 +13,8 @@ const funded = new Set<string>();
 
 // The spawn/feed rail (real Circle + treasury) — enabled only when the env is present, so the
 // server still boots read-only in dev environments without credentials.
+let seedQueue: Promise<void> = Promise.resolve();
+
 function actionsFromEnv(): ServerOptions['actions'] {
   if (!process.env.CIRCLE_API_KEY || !process.env.TREASURY_PRIVATE_KEY) return undefined;
   const circle = circleClient();
@@ -31,8 +33,14 @@ function actionsFromEnv(): ServerOptions['actions'] {
         });
         return createCreatureWallet(circle, await walletSetIdP);
       },
-      seed: async (address, amountUsdc): Promise<void> => {
-        await seedFromTreasury(amountUsdc, address);
+      // SERIALIZED treasury queue: concurrent depositFor from the SAME treasury EOA collide on the
+      // nonce (proven live by the 5-concurrent derisk: 1 of 5 landed, 4 lost). One at a time —
+      // spawns still respond instantly (seeding is background), and at 10 spawns/hour the queue
+      // never builds. The chain of promises never breaks: a failed seed doesn't block the next.
+      seed: (address, amountUsdc): Promise<void> => {
+        const run = seedQueue.then(() => seedFromTreasury(amountUsdc, address)).then(() => undefined);
+        seedQueue = run.catch(() => undefined);
+        return run;
       },
       gatewayAvailable,
     },
